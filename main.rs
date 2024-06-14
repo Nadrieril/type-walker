@@ -51,7 +51,7 @@ pub mod lending_iterator {
 
 /// The visitor crate would provide these definitions.
 pub mod visitor_crate {
-    use std::{any::Any, marker::PhantomData};
+    use std::any::Any;
 
     use crate::*;
 
@@ -78,12 +78,15 @@ pub mod visitor_crate {
     {
         /// Provided method that calls `f` on each visited item of type `T`. Returns a new iterator
         /// that iterates on the same items (of course `f` may have modified them in flight).
-        fn inspect_t<T: 'static, F: FnMut(&mut T, Event)>(self, f: F) -> Inspect<Self, T, F> {
-            Inspect {
-                iter: self,
-                f,
-                marker: PhantomData,
-            }
+        fn inspect_t<T: 'static, F: FnMut(&mut T, Event)>(
+            self,
+            mut f: F,
+        ) -> Inspect<Self, impl FnMut(&mut (&mut dyn Any, Event))> {
+            self.inspect(move |(next, event): &mut (&mut dyn Any, Event)| {
+                if let Some(next_t) = (*next).downcast_mut::<T>() {
+                    f(next_t, *event)
+                }
+            })
         }
 
         /// Runs to completion.
@@ -101,37 +104,6 @@ pub mod visitor_crate {
         T: LendingIterator,
         T: for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>,
     {
-    }
-
-    pub struct Inspect<I, T, F> {
-        iter: I,
-        f: F,
-        marker: PhantomData<T>,
-    }
-
-    impl<'item, I, T, F> LendingIteratorItem<'item> for Inspect<I, T, F>
-    where
-        I: TypeWalker,
-        F: FnMut(&mut T, Event),
-        T: 'static,
-    {
-        type Item = Item<'item, I>;
-    }
-    impl<I, T, F> LendingIterator for Inspect<I, T, F>
-    where
-        I: TypeWalker,
-        F: FnMut(&mut T, Event),
-        T: 'static,
-    {
-        fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
-            let mut next = self.iter.next();
-            if let Some((next, event)) = next.as_mut() {
-                if let Some(next_t) = next.downcast_mut::<T>() {
-                    (self.f)(next_t, *event)
-                }
-            }
-            next
-        }
     }
 
     // Visits a single type (without looking deeper into it). Can be used to visit base types.
