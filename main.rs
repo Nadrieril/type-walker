@@ -20,6 +20,16 @@ pub mod lending_iterator {
         fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> Inspect<Self, F> {
             Inspect { iter: self, f }
         }
+
+        fn chain<J: LendingIterator>(self, other: J) -> Chain<Self, J>
+        where
+            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
+        {
+            Chain {
+                first: Some(self),
+                second: Some(other),
+            }
+        }
     }
     pub trait LendingIteratorItem<'item, Bounds = &'item Self> {
         type Item;
@@ -30,7 +40,6 @@ pub mod lending_iterator {
         iter: I,
         f: F,
     }
-
     impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Inspect<I, F> {
         type Item = Item<'item, I>;
     }
@@ -45,6 +54,42 @@ pub mod lending_iterator {
                 (self.f)(next)
             }
             next
+        }
+    }
+
+    pub struct Chain<I, J> {
+        first: Option<I>,
+        second: Option<J>,
+    }
+    impl<'item, I, J> LendingIteratorItem<'item> for Chain<I, J>
+    where
+        I: LendingIteratorItem<'item>,
+        J: LendingIteratorItem<'item, Item = I::Item>,
+    {
+        type Item = I::Item;
+    }
+    impl<I, J> LendingIterator for Chain<I, J>
+    where
+        I: LendingIterator,
+        J: LendingIterator,
+        J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
+    {
+        fn next(&mut self) -> Option<Item<'_, I>> {
+            if let Some(first) = &mut self.first {
+                if let Some(next) = first.next() {
+                    return Some(next);
+                } else {
+                    self.first = None;
+                }
+            }
+            if let Some(second) = &mut self.second {
+                if let Some(next) = second.next() {
+                    return Some(next);
+                } else {
+                    self.second = None;
+                }
+            }
+            None
         }
     }
 }
@@ -68,9 +113,7 @@ pub mod visitor_crate {
         fn walk<'a>(&'a mut self) -> Self::Walker<'a>;
     }
 
-    /// An iterator-like state machine that returns the next field to visit on each call to `next`.
-    /// Just like `Iterator`, it has convenient provided methods. Implementors should only
-    /// implement `field`.
+    /// This is just a trait alias with extra provided methods.
     pub trait TypeWalker:
         Sized
         + LendingIterator
@@ -160,17 +203,15 @@ impl Walkable for Point {
         PointIter {
             this: self,
             borrow: PhantomData,
-            next_step: PointNextStep::EnterSelf,
+            next_step: PointNextStep::Start,
         }
     }
 }
 enum PointNextStep<'a> {
-    EnterSelf,
-    EnterX,
-    WalkX(<u8 as Walkable>::Walker<'a>),
-    WalkY(<u8 as Walkable>::Walker<'a>),
+    Start,
+    EnterFields,
+    WalkFields(Chain<<u8 as Walkable>::Walker<'a>, <u8 as Walkable>::Walker<'a>>),
     Done,
-    Dummy,
 }
 pub struct PointIter<'a> {
     /// This is morally a `&'a mut Point` but we need a pointer to keep it around while the insides
@@ -189,34 +230,21 @@ impl<'a> LendingIterator for PointIter<'a> {
         // to use `yield` to make this even easier to write.
         use Event::*;
         use PointNextStep::*;
-        if let EnterSelf = self.next_step {
-            self.next_step = EnterX;
+        if let Start = self.next_step {
+            self.next_step = EnterFields;
             // SAFETY: no references derived from `this` are live, and `this` is borrowed
             // for `'a`.
             let this = unsafe { &mut *self.this };
             return Some((this as &mut dyn Any, Enter));
         }
-        if let EnterX = self.next_step {
+        if let EnterFields = self.next_step {
             // SAFETY: no references derived from `this` are live, and `this` is borrowed
             // for `'a`.
             let this = unsafe { &mut *self.this };
-            self.next_step = WalkX(this.x.walk());
+            self.next_step = WalkFields(this.x.walk().chain(this.y.walk()));
             // Continue to next case.
         }
-        if let WalkX(ref mut walker) = self.next_step {
-            if let Some(next) = walker.next() {
-                return Some(next);
-            } else {
-                // Drop the walker.
-                self.next_step = Dummy;
-                // SAFETY: no references derived from `this` are live, and `this` is borrowed
-                // for `'a`.
-                let this = unsafe { &mut *self.this };
-                self.next_step = WalkY(this.y.walk());
-                // Continue to next case.
-            }
-        }
-        if let WalkY(ref mut walker) = self.next_step {
+        if let WalkFields(ref mut walker) = self.next_step {
             if let Some(next) = walker.next() {
                 return Some(next);
             } else {
