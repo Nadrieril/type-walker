@@ -7,32 +7,39 @@ use visitor_crate::*;
 
 /// The lending iterator trait and helpers.
 pub mod lending_iterator {
-    pub trait LendingIterator: Sized {
-        type Item<'a>
-        where
-            Self: 'a;
-
-        fn next(&mut self) -> Option<Self::Item<'_>>;
+    //! GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
+    //! GAT we can't write the `TypeWalker` trait alias because the `for<'a>` constraint becomes
+    //! impossible to satisfy. Idk if this is a trait solver bug or a type system limitation.
+    pub trait LendingIterator: Sized
+    where
+        Self: for<'item> LendingIteratorItem<'item>,
+    {
+        fn next(&mut self) -> Option<Item<'_, Self>>;
 
         /// Provided method that calls `f` on each item.
-        fn inspect<F: for<'a> FnMut(&mut Self::Item<'a>)>(self, f: F) -> Inspect<Self, F> {
+        fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> Inspect<Self, F> {
             Inspect { iter: self, f }
         }
     }
+    pub trait LendingIteratorItem<'item, Bounds = &'item Self> {
+        type Item;
+    }
+    pub type Item<'lt, I> = <I as LendingIteratorItem<'lt>>::Item;
 
     pub struct Inspect<I, F> {
         iter: I,
         f: F,
     }
 
+    impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Inspect<I, F> {
+        type Item = Item<'item, I>;
+    }
     impl<I, F> LendingIterator for Inspect<I, F>
     where
         I: LendingIterator,
-        F: for<'a> FnMut(&mut I::Item<'a>),
+        F: for<'a> FnMut(&mut Item<'a, Self>),
     {
-        type Item<'a> = I::Item<'a> where I: 'a, F: 'a;
-
-        fn next(&mut self) -> Option<Self::Item<'_>> {
+        fn next(&mut self) -> Option<Item<'_, Self>> {
             let mut next = self.iter.next();
             if let Some(next) = next.as_mut() {
                 (self.f)(next)
@@ -46,7 +53,7 @@ pub mod lending_iterator {
 pub mod visitor_crate {
     use std::{any::Any, marker::PhantomData};
 
-    use crate::LendingIterator;
+    use crate::*;
 
     #[derive(Debug, Clone, Copy)]
     pub enum Event {
@@ -55,7 +62,6 @@ pub mod visitor_crate {
     }
 
     pub trait Walkable {
-        // type Walker<'a>: for<'b> LendingIterator<Item<'b> = (&'b mut dyn Any, Event)>
         type Walker<'a>: TypeWalker
         where
             Self: 'a;
@@ -65,9 +71,11 @@ pub mod visitor_crate {
     /// An iterator-like state machine that returns the next field to visit on each call to `next`.
     /// Just like `Iterator`, it has convenient provided methods. Implementors should only
     /// implement `field`.
-    pub trait TypeWalker: Sized {
-        fn next(&mut self) -> Option<(&mut dyn Any, Event)>;
-
+    pub trait TypeWalker:
+        Sized
+        + LendingIterator
+        + for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>
+    {
         /// Provided method that calls `f` on each visited item of type `T`. Returns a new iterator
         /// that iterates on the same items (of course `f` may have modified them in flight).
         fn inspect_t<T: 'static, F: FnMut(&mut T, Event)>(self, f: F) -> Inspect<Self, T, F> {
@@ -88,15 +96,12 @@ pub mod visitor_crate {
             }
         }
     }
-
-    // impl<T> TypeWalker for T
-    // where
-    //     T: for<'a> LendingIterator<Item<'a> = (&'a mut dyn Any, Event)>
-    // {
-    //     fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
-    //         <Self as LendingIterator>::next(self)
-    //     }
-    // }
+    impl<T> TypeWalker for T
+    where
+        T: LendingIterator,
+        T: for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>,
+    {
+    }
 
     pub struct Inspect<I, T, F> {
         iter: I,
@@ -104,24 +109,20 @@ pub mod visitor_crate {
         marker: PhantomData<T>,
     }
 
-    impl<I, T, F> TypeWalker for Inspect<I, T, F>
+    impl<'item, I, T, F> LendingIteratorItem<'item> for Inspect<I, T, F>
     where
         I: TypeWalker,
         F: FnMut(&mut T, Event),
         T: 'static,
     {
-        fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
-            <Self as LendingIterator>::next(self)
-        }
+        type Item = Item<'item, I>;
     }
-
     impl<I, T, F> LendingIterator for Inspect<I, T, F>
     where
         I: TypeWalker,
         F: FnMut(&mut T, Event),
         T: 'static,
     {
-        type Item<'b> = (&'b mut dyn Any, Event) where Self: 'b;
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             let mut next = self.iter.next();
             if let Some((next, event)) = next.as_mut() {
@@ -146,14 +147,10 @@ pub mod visitor_crate {
         next_event: Option<Event>,
     }
 
-    impl<'a, T: Any> TypeWalker for Single<'a, T> {
-        fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
-            <Self as LendingIterator>::next(self)
-        }
+    impl<'a, 'item, T: Any> LendingIteratorItem<'item> for Single<'a, T> {
+        type Item = (&'item mut dyn Any, Event);
     }
-
     impl<'a, T: Any> LendingIterator for Single<'a, T> {
-        type Item<'b> = (&'b mut dyn Any, Event) where Self: 'b;
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             use Event::*;
             let e = self.next_event?;
@@ -207,13 +204,10 @@ pub struct PointIter<'a> {
     this: &'a mut Point,
     next_step: PointNextStep,
 }
-impl<'a> TypeWalker for PointIter<'a> {
-    fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
-        <Self as LendingIterator>::next(self)
-    }
+impl<'a, 'item> LendingIteratorItem<'item> for PointIter<'a> {
+    type Item = (&'item mut dyn Any, Event);
 }
 impl<'a> LendingIterator for PointIter<'a> {
-    type Item<'b> = (&'b mut dyn Any, Event) where 'a: 'b;
     fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
         // This is in fact a hand-rolled `Generator`. With nightly rustc we might be able
         // to use `yield` to make this even easier to write.
