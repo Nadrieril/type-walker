@@ -1,6 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(gen_blocks)]
-use std::any::Any;
+use std::{any::Any, marker::PhantomData};
 
 use lending_iterator::*;
 use visitor_crate::*;
@@ -159,22 +159,25 @@ impl Walkable for Point {
     fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
         PointIter {
             this: self,
+            borrow: PhantomData,
             next_step: PointNextStep::EnterSelf,
         }
     }
 }
-enum PointNextStep {
+enum PointNextStep<'a> {
     EnterSelf,
     EnterX,
-    ExitX,
-    EnterY,
-    ExitY,
-    ExitSelf,
+    WalkX(<u8 as Walkable>::Walker<'a>),
+    WalkY(<u8 as Walkable>::Walker<'a>),
     Done,
 }
 pub struct PointIter<'a> {
-    this: &'a mut Point,
-    next_step: PointNextStep,
+    /// This is morally a `&'a mut Point` but we need a pointer to keep it around while the insides
+    /// are borrowed.
+    /// SAFETY: don't access while a derived reference is live.
+    this: *mut Point,
+    borrow: PhantomData<&'a mut Point>,
+    next_step: PointNextStep<'a>,
 }
 impl<'a, 'item> LendingIteratorItem<'item> for PointIter<'a> {
     type Item = (&'item mut dyn Any, Event);
@@ -185,32 +188,52 @@ impl<'a> LendingIterator for PointIter<'a> {
         // to use `yield` to make this even easier to write.
         use Event::*;
         use PointNextStep::*;
-        match self.next_step {
-            EnterSelf => {
-                self.next_step = EnterX;
-                Some((self.this as &mut dyn Any, Enter))
+        loop {
+            match self.next_step {
+                EnterSelf => {
+                    self.next_step = EnterX;
+                    // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                    // for `'a`.
+                    unsafe {
+                        return Some((&mut *self.this as &mut dyn Any, Enter));
+                    }
+                }
+                EnterX => {
+                    // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                    // for `'a`.
+                    unsafe {
+                        self.next_step = WalkX((*self.this).x.walk());
+                    }
+                    continue;
+                }
+                WalkX(ref mut walker) => {
+                    let next = walker.next();
+                    if next.is_some() {
+                        return next;
+                    } else {
+                        // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                        // for `'a`.
+                        unsafe {
+                            self.next_step = WalkY((*self.this).y.walk());
+                        }
+                        continue;
+                    }
+                }
+                WalkY(ref mut walker) => {
+                    let next = walker.next();
+                    if next.is_some() {
+                        return next;
+                    } else {
+                        self.next_step = Done;
+                        // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                        // for `'a`.
+                        unsafe {
+                            return Some((&mut *self.this as &mut dyn Any, Exit));
+                        }
+                    }
+                }
+                Done => return None,
             }
-            EnterX => {
-                self.next_step = ExitX;
-                Some((&mut self.this.x as &mut dyn Any, Enter))
-            }
-            ExitX => {
-                self.next_step = EnterY;
-                Some((&mut self.this.x as &mut dyn Any, Exit))
-            }
-            EnterY => {
-                self.next_step = ExitY;
-                Some((&mut self.this.y as &mut dyn Any, Enter))
-            }
-            ExitY => {
-                self.next_step = ExitSelf;
-                Some((&mut self.this.y as &mut dyn Any, Exit))
-            }
-            ExitSelf => {
-                self.next_step = Done;
-                Some((self.this as &mut dyn Any, Exit))
-            }
-            Done => None,
         }
     }
 }
