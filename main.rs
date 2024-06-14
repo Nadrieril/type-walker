@@ -170,6 +170,7 @@ enum PointNextStep<'a> {
     WalkX(<u8 as Walkable>::Walker<'a>),
     WalkY(<u8 as Walkable>::Walker<'a>),
     Done,
+    Dummy,
 }
 pub struct PointIter<'a> {
     /// This is morally a `&'a mut Point` but we need a pointer to keep it around while the insides
@@ -188,53 +189,45 @@ impl<'a> LendingIterator for PointIter<'a> {
         // to use `yield` to make this even easier to write.
         use Event::*;
         use PointNextStep::*;
-        loop {
-            match self.next_step {
-                EnterSelf => {
-                    self.next_step = EnterX;
-                    // SAFETY: no references derived from `this` are live, and `this` is borrowed
-                    // for `'a`.
-                    unsafe {
-                        return Some((&mut *self.this as &mut dyn Any, Enter));
-                    }
-                }
-                EnterX => {
-                    // SAFETY: no references derived from `this` are live, and `this` is borrowed
-                    // for `'a`.
-                    unsafe {
-                        self.next_step = WalkX((*self.this).x.walk());
-                    }
-                    continue;
-                }
-                WalkX(ref mut walker) => {
-                    let next = walker.next();
-                    if next.is_some() {
-                        return next;
-                    } else {
-                        // SAFETY: no references derived from `this` are live, and `this` is borrowed
-                        // for `'a`.
-                        unsafe {
-                            self.next_step = WalkY((*self.this).y.walk());
-                        }
-                        continue;
-                    }
-                }
-                WalkY(ref mut walker) => {
-                    let next = walker.next();
-                    if next.is_some() {
-                        return next;
-                    } else {
-                        self.next_step = Done;
-                        // SAFETY: no references derived from `this` are live, and `this` is borrowed
-                        // for `'a`.
-                        unsafe {
-                            return Some((&mut *self.this as &mut dyn Any, Exit));
-                        }
-                    }
-                }
-                Done => return None,
+        if let EnterSelf = self.next_step {
+            self.next_step = EnterX;
+            // SAFETY: no references derived from `this` are live, and `this` is borrowed
+            // for `'a`.
+            let this = unsafe { &mut *self.this };
+            return Some((this as &mut dyn Any, Enter));
+        }
+        if let EnterX = self.next_step {
+            // SAFETY: no references derived from `this` are live, and `this` is borrowed
+            // for `'a`.
+            let this = unsafe { &mut *self.this };
+            self.next_step = WalkX(this.x.walk());
+            // Continue to next case.
+        }
+        if let WalkX(ref mut walker) = self.next_step {
+            if let Some(next) = walker.next() {
+                return Some(next);
+            } else {
+                // Drop the walker.
+                self.next_step = Dummy;
+                // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                // for `'a`.
+                let this = unsafe { &mut *self.this };
+                self.next_step = WalkY(this.y.walk());
+                // Continue to next case.
             }
         }
+        if let WalkY(ref mut walker) = self.next_step {
+            if let Some(next) = walker.next() {
+                return Some(next);
+            } else {
+                self.next_step = Done;
+                // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                // for `'a`.
+                let this = unsafe { &mut *self.this };
+                return Some((this as &mut dyn Any, Exit));
+            }
+        }
+        None
     }
 }
 
