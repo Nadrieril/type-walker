@@ -1,0 +1,10 @@
+[package]
+name = "visitor_as_lending_iterator"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "visitor_as_lending_iterator"
+path = "main.rs"
+
+[dependencies]
