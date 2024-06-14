@@ -1,6 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(gen_blocks)]
-use std::{any::Any, marker::PhantomData};
+use std::marker::PhantomData;
 
 use lending_iterator::*;
 use visitor_crate::*;
@@ -149,6 +149,82 @@ pub mod visitor_crate {
     {
     }
 
+    /// A walker that enters `this`, walks over the walker returned by `walk_inside`, and exits
+    /// `this`.
+    pub fn walk_this_and_inside<'a, T, F, W>(
+        this: &'a mut T,
+        walk_inside: F,
+    ) -> ThisAndInsideWalker<'a, T, F, W>
+    where
+        F: FnOnce(&'a mut T) -> W,
+        W: TypeWalker,
+    {
+        ThisAndInsideWalker {
+            this,
+            borrow: PhantomData,
+            walk_inside: Some(walk_inside),
+            next_step: ThisAndInsideWalkerNextStep::Start,
+        }
+    }
+    pub struct ThisAndInsideWalker<'a, T, F, W> {
+        /// This is morally a `&'a mut T` but we need a pointer to keep it around while the insides
+        /// are borrowed.
+        /// SAFETY: don't access while a derived reference is live.
+        this: *mut T,
+        borrow: PhantomData<&'a mut T>,
+        walk_inside: Option<F>,
+        next_step: ThisAndInsideWalkerNextStep<W>,
+    }
+    enum ThisAndInsideWalkerNextStep<W> {
+        Start,
+        EnterInside,
+        WalkInside(W),
+        Done,
+    }
+    impl<'a, 'item, T, F, W> LendingIteratorItem<'item> for ThisAndInsideWalker<'a, T, F, W> {
+        type Item = (&'item mut dyn Any, Event);
+    }
+    impl<'a, T, F, W> LendingIterator for ThisAndInsideWalker<'a, T, F, W>
+    where
+        T: Any,
+        F: FnOnce(&'a mut T) -> W,
+        W: TypeWalker,
+    {
+        fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
+            // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
+            // to use `yield` to make this easier to write.
+            use Event::*;
+            use ThisAndInsideWalkerNextStep::*;
+            if let Start = self.next_step {
+                self.next_step = EnterInside;
+                // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                // for `'a`.
+                let this = unsafe { &mut *self.this };
+                return Some((this as &mut dyn Any, Enter));
+            }
+            if let EnterInside = self.next_step {
+                // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                // for `'a`.
+                let this = unsafe { &mut *self.this };
+                let walker = (self.walk_inside.take().unwrap())(this);
+                self.next_step = WalkInside(walker);
+                // Continue to next case.
+            }
+            if let WalkInside(ref mut walker) = self.next_step {
+                if let Some(next) = walker.next() {
+                    return Some(next);
+                } else {
+                    self.next_step = Done;
+                    // SAFETY: no references derived from `this` are live, and `this` is borrowed
+                    // for `'a`.
+                    let this = unsafe { &mut *self.this };
+                    return Some((this as &mut dyn Any, Exit));
+                }
+            }
+            None
+        }
+    }
+
     // Visits a single type (without looking deeper into it). Can be used to visit base types.
     pub fn single<'a, T: 'static>(val: &'a mut T) -> Single<'a, T> {
         Single {
@@ -156,7 +232,6 @@ pub mod visitor_crate {
             next_event: Some(Event::Enter),
         }
     }
-
     pub struct Single<'a, T> {
         val: &'a mut T,
         next_event: Option<Event>,
@@ -183,13 +258,6 @@ pub mod visitor_crate {
     }
 }
 
-impl Walkable for u8 {
-    type Walker<'a> = Single<'a, u8>;
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        single(self)
-    }
-}
-
 #[derive(Debug)]
 pub struct Point {
     x: u8,
@@ -198,64 +266,9 @@ pub struct Point {
 
 // This can be derived automatically.
 impl Walkable for Point {
-    type Walker<'a> = PointIter<'a>;
+    type Walker<'a> = impl TypeWalker;
     fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        PointIter {
-            this: self,
-            borrow: PhantomData,
-            next_step: PointNextStep::Start,
-        }
-    }
-}
-enum PointNextStep<'a> {
-    Start,
-    EnterFields,
-    WalkFields(Chain<<u8 as Walkable>::Walker<'a>, <u8 as Walkable>::Walker<'a>>),
-    Done,
-}
-pub struct PointIter<'a> {
-    /// This is morally a `&'a mut Point` but we need a pointer to keep it around while the insides
-    /// are borrowed.
-    /// SAFETY: don't access while a derived reference is live.
-    this: *mut Point,
-    borrow: PhantomData<&'a mut Point>,
-    next_step: PointNextStep<'a>,
-}
-impl<'a, 'item> LendingIteratorItem<'item> for PointIter<'a> {
-    type Item = (&'item mut dyn Any, Event);
-}
-impl<'a> LendingIterator for PointIter<'a> {
-    fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
-        // This is in fact a hand-rolled `Generator`. With nightly rustc we might be able
-        // to use `yield` to make this even easier to write.
-        use Event::*;
-        use PointNextStep::*;
-        if let Start = self.next_step {
-            self.next_step = EnterFields;
-            // SAFETY: no references derived from `this` are live, and `this` is borrowed
-            // for `'a`.
-            let this = unsafe { &mut *self.this };
-            return Some((this as &mut dyn Any, Enter));
-        }
-        if let EnterFields = self.next_step {
-            // SAFETY: no references derived from `this` are live, and `this` is borrowed
-            // for `'a`.
-            let this = unsafe { &mut *self.this };
-            self.next_step = WalkFields(this.x.walk().chain(this.y.walk()));
-            // Continue to next case.
-        }
-        if let WalkFields(ref mut walker) = self.next_step {
-            if let Some(next) = walker.next() {
-                return Some(next);
-            } else {
-                self.next_step = Done;
-                // SAFETY: no references derived from `this` are live, and `this` is borrowed
-                // for `'a`.
-                let this = unsafe { &mut *self.this };
-                return Some((this as &mut dyn Any, Exit));
-            }
-        }
-        None
+        walk_this_and_inside(self, |this| single(&mut this.x).chain(single(&mut this.y)))
     }
 }
 
