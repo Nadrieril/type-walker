@@ -19,6 +19,13 @@ pub mod lending_iterator {
             inspect::Inspect { iter: self, f }
         }
 
+        fn filter<F: for<'a> FnMut(&Item<'a, Self>) -> bool>(
+            self,
+            f: F,
+        ) -> filter::Filter<Self, F> {
+            filter::Filter { iter: self, f }
+        }
+
         fn chain<J: LendingIterator>(self, other: J) -> chain::Chain<Self, J>
         where
             J: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
@@ -59,6 +66,34 @@ pub mod lending_iterator {
                     (self.f)(next)
                 }
                 next
+            }
+        }
+    }
+
+    pub mod filter {
+        use crate::*;
+
+        pub struct Filter<I, F> {
+            pub(super) iter: I,
+            pub(super) f: F,
+        }
+
+        impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Filter<I, F> {
+            type Item = Item<'item, I>;
+        }
+
+        impl<I, F> LendingIterator for Filter<I, F>
+        where
+            I: LendingIterator,
+            F: for<'a> FnMut(&Item<'a, Self>) -> bool,
+        {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
+                while let Some(next) = self.iter.next() {
+                    if (self.f)(&next) {
+                        return Some(next);
+                    }
+                }
+                None
             }
         }
     }
@@ -142,6 +177,16 @@ pub mod visitor_crate {
                     f(next_t, *event)
                 }
             })
+        }
+
+        /// Returns the next value of type `T`.
+        fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
+            while let Some((next, e)) = self.next() {
+                if let Some(next) = next.downcast_mut::<T>() {
+                    return Some((next, e));
+                }
+            }
+            None
         }
 
         /// Runs to completion.
@@ -313,5 +358,15 @@ fn main() {
             *x = 0;
         })
         .run();
+
+    // Now the point is all 0s. Set some nice values instead.
+    let mut walker = p.walk().filter(|(_, e)| matches!(e, Event::Enter));
+    let (x, _) = walker.next_t::<u8>().unwrap();
+    *x = 101;
+    let (y, _) = walker.next_t::<u8>().unwrap();
+    *y = 202;
+    assert!(walker.next().is_none());
+    drop(walker);
+
     println!("Final state of the Point: {p:?}");
 }
