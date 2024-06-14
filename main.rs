@@ -54,18 +54,18 @@ pub mod visitor_crate {
         Exit,
     }
 
-    pub trait Visitable {
-        // type Iter<'a>: for<'b> LendingIterator<Item<'b> = (&'b mut dyn Any, Event)>
-        type Iter<'a>: VisitIter
+    pub trait Walkable {
+        // type Walker<'a>: for<'b> LendingIterator<Item<'b> = (&'b mut dyn Any, Event)>
+        type Walker<'a>: TypeWalker
         where
             Self: 'a;
-        fn visit_iter<'a>(&'a mut self) -> Self::Iter<'a>;
+        fn walk<'a>(&'a mut self) -> Self::Walker<'a>;
     }
 
     /// An iterator-like state machine that returns the next field to visit on each call to `next`.
     /// Just like `Iterator`, it has convenient provided methods. Implementors should only
     /// implement `field`.
-    pub trait VisitIter: Sized {
+    pub trait TypeWalker: Sized {
         fn next(&mut self) -> Option<(&mut dyn Any, Event)>;
 
         /// Provided method that calls `f` on each visited item of type `T`. Returns a new iterator
@@ -89,7 +89,7 @@ pub mod visitor_crate {
         }
     }
 
-    // impl<T> VisitIter for T
+    // impl<T> TypeWalker for T
     // where
     //     T: for<'a> LendingIterator<Item<'a> = (&'a mut dyn Any, Event)>
     // {
@@ -104,9 +104,9 @@ pub mod visitor_crate {
         marker: PhantomData<T>,
     }
 
-    impl<I, T, F> VisitIter for Inspect<I, T, F>
+    impl<I, T, F> TypeWalker for Inspect<I, T, F>
     where
-        I: VisitIter,
+        I: TypeWalker,
         F: FnMut(&mut T, Event),
         T: 'static,
     {
@@ -117,7 +117,7 @@ pub mod visitor_crate {
 
     impl<I, T, F> LendingIterator for Inspect<I, T, F>
     where
-        I: VisitIter,
+        I: TypeWalker,
         F: FnMut(&mut T, Event),
         T: 'static,
     {
@@ -146,7 +146,7 @@ pub mod visitor_crate {
         next_event: Option<Event>,
     }
 
-    impl<'a, T: Any> VisitIter for Single<'a, T> {
+    impl<'a, T: Any> TypeWalker for Single<'a, T> {
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             <Self as LendingIterator>::next(self)
         }
@@ -166,14 +166,14 @@ pub mod visitor_crate {
     }
 
     /// Visit all subobjects of type `U` of `obj`
-    pub fn visit<T: Visitable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U, Event)) {
-        obj.visit_iter().inspect_t(callback).run();
+    pub fn visit<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U, Event)) {
+        obj.walk().inspect_t(callback).run();
     }
 }
 
-impl Visitable for u8 {
-    type Iter<'a> = Single<'a, u8>;
-    fn visit_iter<'a>(&'a mut self) -> Self::Iter<'a> {
+impl Walkable for u8 {
+    type Walker<'a> = Single<'a, u8>;
+    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
         single(self)
     }
 }
@@ -185,9 +185,9 @@ pub struct Point {
 }
 
 // This can be derived automatically.
-impl Visitable for Point {
-    type Iter<'a> = PointIter<'a>;
-    fn visit_iter<'a>(&'a mut self) -> Self::Iter<'a> {
+impl Walkable for Point {
+    type Walker<'a> = PointIter<'a>;
+    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
         PointIter {
             this: self,
             next_step: PointNextStep::EnterSelf,
@@ -207,7 +207,7 @@ pub struct PointIter<'a> {
     this: &'a mut Point,
     next_step: PointNextStep,
 }
-impl<'a> VisitIter for PointIter<'a> {
+impl<'a> TypeWalker for PointIter<'a> {
     fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
         <Self as LendingIterator>::next(self)
     }
@@ -251,7 +251,7 @@ impl<'a> LendingIterator for PointIter<'a> {
 
 fn main() {
     let mut p = Point { x: 42, y: 12 };
-    p.visit_iter()
+    p.walk()
         .inspect_t(|p: &mut Point, e| {
             println!("We got a Point({e:?}): {p:?}");
         })
