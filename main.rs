@@ -4,40 +4,38 @@ use lending_iterator::*;
 use visitor::*;
 
 /// The lending iterator trait and helpers.
-// I define my own instead of using an existing one because the existing ones don't define the
-// `Item` type separately.
+// I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
+// because that one doesn't have `inspect`, `chain` or `zip`.
 pub mod lending_iterator {
     pub use chain::Chain;
     pub use filter::Filter;
     pub use inspect::Inspect;
     pub use zip::Zip;
 
-    // We split the trait in two to avoid the `Self: 'a` bound. If the bound is there we can't
-    // write the `TypeWalker` trait alias because the `Self: 'a` bound makes the `for<'a>`
-    // constraint impossible to satisfy.
-    // This makes it impossible to yield items that borrow directly from `self`. That's
-    // unfortunate, but we don't need that for our visitors.
-    pub trait LendingIteratorItem {
-        type Item<'item>;
-    }
-
-    pub trait LendingIterator: LendingIteratorItem + Sized {
-        fn next(&mut self) -> Option<Self::Item<'_>>;
+    // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
+    // GAT we can't write the `TypeWalker` trait alias because the `Self: 'a` bound makes the
+    // `for<'a>` constraint impossible to satisfy. Idk if this is a trait solver bug or a type
+    // system limitation.
+    pub trait LendingIterator: Sized
+    where
+        Self: for<'item> LendingIteratorItem<'item>,
+    {
+        fn next(&mut self) -> Option<Item<'_, Self>>;
 
         /// Like `Iterator::inspect`.
-        fn inspect<F: for<'a> FnMut(&mut Self::Item<'a>)>(self, f: F) -> Inspect<Self, F> {
+        fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> Inspect<Self, F> {
             Inspect { iter: self, f }
         }
 
         /// Like `Iterator::filter`.
-        fn filter<F: for<'a> FnMut(&Self::Item<'a>) -> bool>(self, f: F) -> Filter<Self, F> {
+        fn filter<F: for<'a> FnMut(&Item<'a, Self>) -> bool>(self, f: F) -> Filter<Self, F> {
             Filter { iter: self, f }
         }
 
         /// Like `Iterator::chain`.
         fn chain<I: LendingIterator>(self, other: I) -> Chain<Self, I>
         where
-            I: for<'item> LendingIteratorItem<Item<'item> = Self::Item<'item>>,
+            I: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
         {
             Chain {
                 first: Some(self),
@@ -54,6 +52,14 @@ pub mod lending_iterator {
         }
     }
 
+    /// Hack to express a GAT without GATs.
+    pub trait LendingIteratorItem<'item, Bounds = &'item Self> {
+        type Item;
+    }
+
+    /// Type alias for convenience.
+    pub type Item<'lt, I> = <I as LendingIteratorItem<'lt>>::Item;
+
     /// The inner workings of `LendingIterator::inspect`.
     pub mod inspect {
         use crate::*;
@@ -63,16 +69,16 @@ pub mod lending_iterator {
             pub(super) f: F,
         }
 
-        impl<I: LendingIterator, F> LendingIteratorItem for Inspect<I, F> {
-            type Item<'item> = I::Item<'item>;
+        impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Inspect<I, F> {
+            type Item = Item<'item, I>;
         }
 
         impl<I, F> LendingIterator for Inspect<I, F>
         where
             I: LendingIterator,
-            F: for<'a> FnMut(&mut Self::Item<'a>),
+            F: for<'a> FnMut(&mut Item<'a, Self>),
         {
-            fn next(&mut self) -> Option<Self::Item<'_>> {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
                 let mut next = self.iter.next();
                 if let Some(next) = next.as_mut() {
                     (self.f)(next)
@@ -91,16 +97,16 @@ pub mod lending_iterator {
             pub(super) f: F,
         }
 
-        impl<I: LendingIterator, F> LendingIteratorItem for Filter<I, F> {
-            type Item<'item> = <I as LendingIteratorItem>::Item<'item>;
+        impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Filter<I, F> {
+            type Item = Item<'item, I>;
         }
 
         impl<I, F> LendingIterator for Filter<I, F>
         where
             I: LendingIterator,
-            F: for<'a> FnMut(&Self::Item<'a>) -> bool,
+            F: for<'a> FnMut(&Item<'a, Self>) -> bool,
         {
-            fn next(&mut self) -> Option<Self::Item<'_>> {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
                 while let Some(next) = self.iter.next() {
                     if (self.f)(&next) {
                         return Some(next);
@@ -120,21 +126,21 @@ pub mod lending_iterator {
             pub(super) second: Option<J>,
         }
 
-        impl<I, J> LendingIteratorItem for Chain<I, J>
+        impl<'item, I, J> LendingIteratorItem<'item> for Chain<I, J>
         where
-            I: LendingIteratorItem,
-            J: for<'item> LendingIteratorItem<Item<'item> = I::Item<'item>>,
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item, Item = I::Item>,
         {
-            type Item<'item> = I::Item<'item>;
+            type Item = I::Item;
         }
 
         impl<I, J> LendingIterator for Chain<I, J>
         where
             I: LendingIterator,
             J: LendingIterator,
-            J: for<'item> LendingIteratorItem<Item<'item> = I::Item<'item>>,
+            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
         {
-            fn next(&mut self) -> Option<Self::Item<'_>> {
+            fn next(&mut self) -> Option<Item<'_, I>> {
                 if let Some(first) = &mut self.first {
                     if let Some(next) = first.next() {
                         return Some(next);
@@ -163,12 +169,12 @@ pub mod lending_iterator {
             pub(super) second: J,
         }
 
-        impl<I, J> LendingIteratorItem for Zip<I, J>
+        impl<'item, I, J> LendingIteratorItem<'item> for Zip<I, J>
         where
-            I: LendingIteratorItem,
-            J: LendingIteratorItem,
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item>,
         {
-            type Item<'item> = (I::Item<'item>, J::Item<'item>);
+            type Item = (I::Item, J::Item);
         }
 
         impl<I, J> LendingIterator for Zip<I, J>
@@ -176,7 +182,7 @@ pub mod lending_iterator {
             I: LendingIterator,
             J: LendingIterator,
         {
-            fn next(&mut self) -> Option<Self::Item<'_>> {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
                 let first = self.first.next()?;
                 let second = self.second.next()?;
                 Some((first, second))
@@ -193,22 +199,21 @@ pub mod lending_iterator {
     pub mod either {
         use crate::*;
 
-        impl<I, J> LendingIteratorItem for Either<I, J>
+        impl<'item, I, J> LendingIteratorItem<'item> for Either<I, J>
         where
-            I: LendingIteratorItem,
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item, Item = I::Item>,
         {
-            type Item<'item> = I::Item<'item>;
+            type Item = I::Item;
         }
 
         impl<I, J> LendingIterator for Either<I, J>
         where
             I: LendingIterator,
             J: LendingIterator,
-            J: for<'item> LendingIteratorItem<
-                Item<'item> = <I as LendingIteratorItem>::Item<'item>,
-            >,
+            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
         {
-            fn next(&mut self) -> Option<Self::Item<'_>> {
+            fn next(&mut self) -> Option<Item<'_, I>> {
                 match self {
                     Self::Left(l) => l.next(),
                     Self::Right(r) => r.next(),
@@ -244,7 +249,7 @@ pub mod visitor {
     pub trait TypeWalker:
         Sized
         + LendingIterator
-        + for<'item> LendingIteratorItem<Item<'item> = (&'item mut dyn Any, Event)>
+        + for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>
     {
         /// Returns the next value of type `T`.
         fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
@@ -287,7 +292,7 @@ pub mod visitor {
     impl<T> TypeWalker for T
     where
         T: LendingIterator,
-        T: for<'item> LendingIteratorItem<Item<'item> = (&'item mut dyn Any, Event)>,
+        T: for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>,
     {
     }
 
@@ -338,8 +343,8 @@ pub mod visitor {
             Done,
         }
 
-        impl<'a, T: InnerWalkable> LendingIteratorItem for ThisAndInsideWalker<'a, T> {
-            type Item<'item> = (&'item mut dyn Any, Event);
+        impl<'a, 'item, T: InnerWalkable> LendingIteratorItem<'item> for ThisAndInsideWalker<'a, T> {
+            type Item = (&'item mut dyn Any, Event);
         }
 
         impl<'a, T: InnerWalkable> LendingIterator for ThisAndInsideWalker<'a, T> {
@@ -407,8 +412,8 @@ pub mod visitor {
             pub(super) next_event: Option<Event>,
         }
 
-        impl<'a, T: Any> LendingIteratorItem for Single<'a, T> {
-            type Item<'item> = (&'item mut dyn Any, Event);
+        impl<'a, 'item, T: Any> LendingIteratorItem<'item> for Single<'a, T> {
+            type Item = (&'item mut dyn Any, Event);
         }
 
         impl<'a, T: Any> LendingIterator for Single<'a, T> {
