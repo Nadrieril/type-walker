@@ -1,5 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(array_try_map)]
+
 use lending_iterator::*;
 use visitor::*;
 
@@ -7,8 +8,6 @@ use visitor::*;
 // I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
 // because that one doesn't have `inspect`, `chain` or `zip`.
 pub mod lending_iterator {
-    use nougat::Gat;
-
     pub use chain::Chain;
     pub use filter::Filter;
     pub use inspect::Inspect;
@@ -17,12 +16,10 @@ pub mod lending_iterator {
     // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
     // GAT we can't write the `TypeWalker` trait alias. Idk if this is a trait solver bug or a type
     // system limitation.
-    #[nougat::gat]
-    pub trait LendingIterator: Sized {
-        type Item<'item>
-        where
-            Self: 'item;
-
+    pub trait LendingIterator: Sized
+    where
+        Self: for<'item> LendingIteratorItem<'item>,
+    {
         fn next(&mut self) -> Option<Item<'_, Self>>;
 
         /// Like `Iterator::inspect`.
@@ -38,7 +35,7 @@ pub mod lending_iterator {
         /// Like `Iterator::chain`.
         fn chain<I: LendingIterator>(self, other: I) -> Chain<Self, I>
         where
-            I: for<'item> LendingIterator<Item<'item> = Item<'item, Self>>,
+            I: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
         {
             Chain {
                 first: Some(self),
@@ -55,8 +52,13 @@ pub mod lending_iterator {
         }
     }
 
+    /// Hack to express a GAT without GATs.
+    pub trait LendingIteratorItem<'item, Bounds = &'item Self> {
+        type Item;
+    }
+
     /// Type alias for convenience.
-    pub type Item<'lt, I: LendingIterator> = Gat!(<I as LendingIterator>::Item<'lt>);
+    pub type Item<'lt, I> = <I as LendingIteratorItem<'lt>>::Item;
 
     /// The inner workings of `LendingIterator::inspect`.
     pub mod inspect {
@@ -67,13 +69,15 @@ pub mod lending_iterator {
             pub(super) f: F,
         }
 
-        #[nougat::gat]
+        impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Inspect<I, F> {
+            type Item = Item<'item, I>;
+        }
+
         impl<I, F> LendingIterator for Inspect<I, F>
         where
             I: LendingIterator,
             F: for<'a> FnMut(&mut Item<'a, Self>),
         {
-            type Item<'item> = Item<'item, I>;
             fn next(&mut self) -> Option<Item<'_, Self>> {
                 let mut next = self.iter.next();
                 if let Some(next) = next.as_mut() {
@@ -93,13 +97,15 @@ pub mod lending_iterator {
             pub(super) f: F,
         }
 
-        #[nougat::gat]
+        impl<'item, I: LendingIterator, F> LendingIteratorItem<'item> for Filter<I, F> {
+            type Item = Item<'item, I>;
+        }
+
         impl<I, F> LendingIterator for Filter<I, F>
         where
             I: LendingIterator,
             F: for<'a> FnMut(&Item<'a, Self>) -> bool,
         {
-            type Item<'item> = Item<'item, I>;
             fn next(&mut self) -> Option<Item<'_, Self>> {
                 while let Some(next) = self.iter.next() {
                     if (self.f)(&next) {
@@ -120,14 +126,20 @@ pub mod lending_iterator {
             pub(super) second: Option<J>,
         }
 
-        #[nougat::gat]
+        impl<'item, I, J> LendingIteratorItem<'item> for Chain<I, J>
+        where
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item, Item = I::Item>,
+        {
+            type Item = I::Item;
+        }
+
         impl<I, J> LendingIterator for Chain<I, J>
         where
             I: LendingIterator,
             J: LendingIterator,
-            J: for<'i> LendingIterator<Item<'i> = Item<'i, I>>,
+            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
         {
-            type Item<'item> = Item<'item, I>;
             fn next(&mut self) -> Option<Item<'_, I>> {
                 if let Some(first) = &mut self.first {
                     if let Some(next) = first.next() {
@@ -157,13 +169,19 @@ pub mod lending_iterator {
             pub(super) second: J,
         }
 
-        #[nougat::gat]
+        impl<'item, I, J> LendingIteratorItem<'item> for Zip<I, J>
+        where
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item>,
+        {
+            type Item = (I::Item, J::Item);
+        }
+
         impl<I, J> LendingIterator for Zip<I, J>
         where
             I: LendingIterator,
             J: LendingIterator,
         {
-            type Item<'item> = (I::Item, J::Item);
             fn next(&mut self) -> Option<Item<'_, Self>> {
                 let first = self.first.next()?;
                 let second = self.second.next()?;
@@ -181,14 +199,20 @@ pub mod lending_iterator {
     pub mod either {
         use crate::*;
 
-        #[nougat::gat]
+        impl<'item, I, J> LendingIteratorItem<'item> for Either<I, J>
+        where
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item, Item = I::Item>,
+        {
+            type Item = I::Item;
+        }
+
         impl<I, J> LendingIterator for Either<I, J>
         where
             I: LendingIterator,
             J: LendingIterator,
-            J: for<'i> LendingIterator<Item<'i> = Item<'i, I>>,
+            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
         {
-            type Item<'item> = Item<'item, I>;
             fn next(&mut self) -> Option<Item<'_, I>> {
                 match self {
                     Self::Left(l) => l.next(),
@@ -201,10 +225,11 @@ pub mod lending_iterator {
     #[test]
     fn test_simple_lending_iterator() {
         struct RepeatRef<T>(T);
+        impl<'item, T> LendingIteratorItem<'item> for RepeatRef<T> {
+            type Item = &'item mut T;
+        }
 
-        #[nougat::gat]
         impl<T> LendingIterator for RepeatRef<T> {
-            type Item<'item> = &'item mut T where T: 'item;
             fn next(&mut self) -> Option<Item<'_, Self>> {
                 Some(&mut self.0)
             }
@@ -214,8 +239,6 @@ pub mod lending_iterator {
 
 /// The visitor crate would provide these definitions.
 pub mod visitor {
-    use nougat::Gat;
-
     use crate::lending_iterator::inspect::Inspect;
     use crate::*;
     use std::any::Any;
@@ -238,11 +261,10 @@ pub mod visitor {
     /// A type visitor.
     /// This is a trait alias for the right kind of lending iterator, with extra provided methods
     /// for convenience.
-    #[nougat::apply(Gat!)]
     pub trait TypeWalker:
         Sized
         + LendingIterator
-        + for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>
+        + for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>
     {
         /// Returns the next value of type `T`.
         fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
@@ -280,11 +302,10 @@ pub mod visitor {
     /// Blanket impl for all lending iterators of the right type.
     // This is the reason we can't use a clean GAT-based lending iterator: when we do, this
     // `for<'item>` bound forces `Self: 'static` which prevents our usecase.
-    #[nougat::apply(Gat!)]
     impl<T> TypeWalker for T
     where
         T: LendingIterator,
-        T: for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>,
+        T: for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>,
     {
     }
 
@@ -335,9 +356,11 @@ pub mod visitor {
             Done,
         }
 
-        #[nougat::gat]
+        impl<'a, 'item, T: InnerWalkable> LendingIteratorItem<'item> for ThisAndInsideWalker<'a, T> {
+            type Item = (&'item mut dyn Any, Event);
+        }
+
         impl<'a, T: InnerWalkable> LendingIterator for ThisAndInsideWalker<'a, T> {
-            type Item<'item> = (&'item mut dyn Any, Event);
             fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
                 // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
                 // to use `yield` to make this easier to write.
@@ -402,9 +425,11 @@ pub mod visitor {
             pub(super) next_event: Option<Event>,
         }
 
-        #[nougat::gat]
+        impl<'a, 'item, T: Any> LendingIteratorItem<'item> for Single<'a, T> {
+            type Item = (&'item mut dyn Any, Event);
+        }
+
         impl<'a, T: Any> LendingIterator for Single<'a, T> {
-            type Item<'item> = (&'item mut dyn Any, Event);
             fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
                 use Event::*;
                 let e = self.next_event?;
@@ -453,9 +478,11 @@ pub mod visitor {
             }
         }
 
-        #[nougat::gat]
+        impl<'item, I: TypeWalker, const N: usize> LendingIteratorItem<'item> for ZipWalkers<I, N> {
+            type Item = ([&'item mut dyn Any; N], Event);
+        }
+
         impl<I: TypeWalker, const N: usize> LendingIterator for ZipWalkers<I, N> {
-            type Item<'item> = ([&'item mut dyn Any; N], Event);
             fn next(&mut self) -> Option<Item<'_, Self>> {
                 let nexts = self.walkers.each_mut().try_map(|walker| walker.next())?;
                 let events: [Event; N] = nexts.each_ref().map(|(_, e)| *e);
