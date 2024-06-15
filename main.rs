@@ -3,6 +3,41 @@
 use lending_iterator::*;
 use visitor::*;
 
+pub mod gat_lending_iterator {
+    pub trait LendingIterator {
+        type Item<'a>
+        where
+            Self: 'a;
+
+        fn next(&mut self) -> Option<Self::Item<'_>>;
+    }
+
+    pub struct RepeatRef<'a, T>(&'a mut T);
+
+    impl<'a, T> LendingIterator for RepeatRef<'a, T> {
+        type Item<'item> = &'item mut T where Self: 'item;
+        fn next(&mut self) -> Option<Self::Item<'_>> {
+            Some(&mut *self.0)
+        }
+    }
+
+    // // This doesn't work because of borrowck limitation.
+    // #[test]
+    // fn test_simple_lending_iterator() {
+    //     fn zero_all_the_numbers<I>(mut iter: I)
+    //     where
+    //         I: for<'item> LendingIterator<Item<'item> = &'item mut u32>,
+    //     {
+    //         while let Some(x) = iter.next() {
+    //             *x = 0;
+    //         }
+    //     }
+
+    //     let mut x = 12;
+    //     zero_all_the_numbers(RepeatRef(&mut x))
+    // }
+}
+
 /// The lending iterator trait and helpers.
 // I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
 // because that one doesn't have `inspect`, `chain` or `zip`.
@@ -13,8 +48,7 @@ pub mod lending_iterator {
     pub use zip::Zip;
 
     // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
-    // GAT we can't write the `TypeWalker` trait alias because the `Self: 'a` bound makes the
-    // `for<'a>` constraint impossible to satisfy. Idk if this is a trait solver bug or a type
+    // GAT we can't write the `TypeWalker` trait alias. Idk if this is a trait solver bug or a type
     // system limitation.
     pub trait LendingIterator: Sized
     where
@@ -299,10 +333,8 @@ pub mod visitor {
         }
     }
     /// Blanket impl for all lending iterators of the right type.
-    // This is the reason we can't use a clean GAT-based lending iterator: rustc forces us to add a
-    // `where Self: 'item` bound to the GAT, which means this `for<'item>` bound cannot be
-    // satistied. If we could write `for<'item such that Self: 'item>` we'd be good, but I don't
-    // know of a way to express that, even with hacks.
+    // This is the reason we can't use a clean GAT-based lending iterator: when we do, this
+    // `for<'item>` bound forces `Self: 'static` which prevents our usecase.
     impl<T> TypeWalker for T
     where
         T: LendingIterator,
