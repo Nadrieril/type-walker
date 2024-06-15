@@ -100,6 +100,18 @@ assert_eq!(p.x, 44);
 assert_eq!(p.y, 14);
 ```
 
+We also support shared-state visitors using the `VisitorBuilder` API:
+
+```rust
+// Build a visitor with access to `state` that will be called on objects of types `Type1` and
+// `Type2`.
+let visitor = VisitorBuilder::new(&mut state)
+    .on(|state, x: &mut Type1, e| ...)
+    .on(|state, x: &mut Type2, e| ...);
+// Walk `val` with the visitor.
+val.walk().inspect_with(visitor).run_to_completion();
+```
+
 ## Implementing `Walkable`
 
 This crate does not have derive macros yet. In the mean time, you must implement the traits by hand.
