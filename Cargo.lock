@@ -3,5 +3,14 @@
 version = 3
 
 [[package]]
+name = "gat-lending-iterator"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42327bb9f2aad5b6400dea3e3aea3a4959529387186d3dc27c08d401c808fda9"
+
+[[package]]
 name = "type_walker"
 version = "0.1.0"
+dependencies = [
+ "gat-lending-iterator",
+]

@@ -2,3 +2,6 @@
 name = "type_walker"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+gat-lending-iterator = "0.1.5"

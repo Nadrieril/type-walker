@@ -4,41 +4,6 @@
 use lending_iterator::*;
 use visitor::*;
 
-pub mod gat_lending_iterator {
-    pub trait LendingIterator {
-        type Item<'a>
-        where
-            Self: 'a;
-
-        fn next(&mut self) -> Option<Self::Item<'_>>;
-    }
-
-    pub struct RepeatRef<'a, T>(&'a mut T);
-
-    impl<'a, T> LendingIterator for RepeatRef<'a, T> {
-        type Item<'item> = &'item mut T where Self: 'item;
-        fn next(&mut self) -> Option<Self::Item<'_>> {
-            Some(&mut *self.0)
-        }
-    }
-
-    // // This doesn't work because of borrowck limitation.
-    // #[test]
-    // fn test_simple_lending_iterator() {
-    //     fn zero_all_the_numbers<I>(mut iter: I)
-    //     where
-    //         I: for<'item> LendingIterator<Item<'item> = &'item mut u32>,
-    //     {
-    //         while let Some(x) = iter.next() {
-    //             *x = 0;
-    //         }
-    //     }
-
-    //     let mut x = 12;
-    //     zero_all_the_numbers(RepeatRef(&mut x))
-    // }
-}
-
 /// The lending iterator trait and helpers.
 // I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
 // because that one doesn't have `inspect`, `chain` or `zip`.
@@ -671,4 +636,32 @@ fn test_zip_walkers() {
 
     assert_eq!(p.x, 11);
     assert_eq!(q.x, 101);
+}
+
+/// Illustrates why we can't use a clean GAT-based lending iterator.
+#[cfg(any())]
+#[test]
+fn test_gat_lending_iterator() {
+    pub struct RepeatRef<'a, T>(&'a mut T);
+
+    impl<'a, T> gat_lending_iterator::LendingIterator for RepeatRef<'a, T> {
+        type Item<'item> = &'item mut T where Self: 'item;
+        fn next(&mut self) -> Option<Self::Item<'_>> {
+            Some(&mut *self.0)
+        }
+    }
+
+    // Borrowck limitations force `I: 'static`
+    fn zero_all_the_numbers<I>(mut iter: I)
+    where
+        I: for<'item> gat_lending_iterator::LendingIterator<Item<'item> = &'item mut u32>,
+    {
+        while let Some(x) = iter.next() {
+            *x = 0;
+        }
+    }
+
+    let mut x = 12;
+    // This doesn't work because `RepeatRef` is not `'static`
+    zero_all_the_numbers(RepeatRef(&mut x))
 }
