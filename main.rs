@@ -2,7 +2,7 @@
 use higher_kinded_types::*;
 
 use lending_iterator::*;
-use visitor_crate::*;
+use visitor::*;
 
 /// The lending iterator trait and helpers.
 // I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
@@ -10,19 +10,20 @@ use visitor_crate::*;
 pub mod lending_iterator {
     // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
     // GAT we can't write the `TypeWalker` trait alias because the `Self: 'a` bound makes the
-    // `for<'a>` constraint becomes impossible to satisfy. Idk if this is a trait solver bug or a
-    // type system limitation.
+    // `for<'a>` constraint impossible to satisfy. Idk if this is a trait solver bug or a type
+    // system limitation.
     pub trait LendingIterator: Sized
     where
         Self: for<'item> LendingIteratorItem<'item>,
     {
         fn next(&mut self) -> Option<Item<'_, Self>>;
 
-        /// Provided method that calls `f` on each item.
+        /// Like `Iterator::inspect`.
         fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> inspect::Inspect<Self, F> {
             inspect::Inspect { iter: self, f }
         }
 
+        /// Like `Iterator::filter`.
         fn filter<F: for<'a> FnMut(&Item<'a, Self>) -> bool>(
             self,
             f: F,
@@ -30,6 +31,7 @@ pub mod lending_iterator {
             filter::Filter { iter: self, f }
         }
 
+        /// Like `Iterator::chain`.
         fn chain<J: LendingIterator>(self, other: J) -> chain::Chain<Self, J>
         where
             J: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
@@ -41,12 +43,15 @@ pub mod lending_iterator {
         }
     }
 
+    /// Hack to express a GAT without GATs.
     pub trait LendingIteratorItem<'item, Bounds = &'item Self> {
         type Item;
     }
 
+    /// Type alias for convenience.
     pub type Item<'lt, I> = <I as LendingIteratorItem<'lt>>::Item;
 
+    /// The inner workings of `LendingIterator::inspect`.
     pub mod inspect {
         use crate::*;
 
@@ -74,6 +79,7 @@ pub mod lending_iterator {
         }
     }
 
+    /// The inner workings of `LendingIterator::filter`.
     pub mod filter {
         use crate::*;
 
@@ -102,6 +108,7 @@ pub mod lending_iterator {
         }
     }
 
+    /// The inner workings of `LendingIterator::chain`.
     pub mod chain {
         use crate::*;
 
@@ -146,11 +153,12 @@ pub mod lending_iterator {
 }
 
 /// The visitor crate would provide these definitions.
-pub mod visitor_crate {
+pub mod visitor {
     use crate::lending_iterator::inspect::Inspect;
     use crate::*;
     use std::any::Any;
 
+    /// A type that can be visited.
     pub trait Walkable {
         type Walker<'a>: TypeWalker
         where
@@ -164,14 +172,16 @@ pub mod visitor_crate {
         Exit,
     }
 
-    /// This is a trait alias with extra provided methods.
+    /// A type visitor.
+    /// This is a trait alias for the right kind of lending iterator, with extra provided methods
+    /// for convenience.
     pub trait TypeWalker:
         Sized
         + LendingIterator
         + for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>
     {
-        /// Provided method that calls `f` on each visited item of type `T`. Returns a new iterator
-        /// that iterates on the same items (of course `f` may have modified them in flight).
+        /// Provided method that calls `f` on each visited item of type `T`. Returns a new visitor
+        /// that visits on the same items (of course `f` may have modified them in flight).
         fn inspect_t<T: 'static, F: FnMut(&mut T, Event)>(
             self,
             mut f: F,
@@ -193,8 +203,8 @@ pub mod visitor_crate {
             None
         }
 
-        /// Runs to completion.
-        fn run(&mut self) {
+        /// Runs to completion. Convenient in combination with `inspect_t`.
+        fn run_to_completion(&mut self) {
             loop {
                 let next = self.next();
                 if next.is_none() {
@@ -203,6 +213,11 @@ pub mod visitor_crate {
             }
         }
     }
+    /// Blanket impl for all lending iterators of the right type.
+    // This is the reason we can't use a clean GAT-based lending iterator: rustc forces us to add a
+    // `where Self: 'item` bound to the GAT, which means this `for<'item>` bound cannot be
+    // satistied. If we could write `for<'item such that Self: 'item>` we'd be good, but I don't
+    // know of a way to express that, even with hacks.
     impl<T> TypeWalker for T
     where
         T: LendingIterator,
@@ -210,10 +225,10 @@ pub mod visitor_crate {
     {
     }
 
-    /// A walker that enters `this`, walks over the walker returned by `walk_inside`, and exits
-    /// `this`.
-    /// The HKT of `F` is crucial for safety. Unfortunately this forces the user to specify the
-    /// type of `W`.
+    /// A walker that yields `(this, Enter)`, walks over the walker returned by `walk_inside`, and
+    /// finishes by yielding `(this, Exit)`.
+    /// The higher-kinded type of `F` is crucial for safety. Unfortunately this forces the user to
+    /// specify the type of `W` by hand, using the `ForLt!` macro.
     pub fn walk_this_and_inside<'a, T, F, W>(
         this: &'a mut T,
         walk_inside: F,
@@ -232,6 +247,7 @@ pub mod visitor_crate {
         }
     }
 
+    /// The inner workings of `walk_this_and_inside`.
     pub mod walk_this_and_inside {
         use crate::*;
         use std::any::Any;
@@ -243,7 +259,11 @@ pub mod visitor_crate {
             /// SAFETY: don't access while a derived reference is live.
             pub(super) this: *mut T,
             pub(super) borrow: PhantomData<&'a mut T>,
+            // Put the function in an `Option` so we can move it out.
             pub(super) walk_inside: Option<F>,
+            // The lifetime `'a` here is a lie: we drop the walker before `'a` ends, and invalidate
+            // the reference it came from afterwards. However, the HKT ensures the user can't rely
+            // on this lifetime being `'a`, so it's safe if we're careful enough.
             pub(super) next_step: ThisAndInsideWalkerNextStep<<W as ForLifetime>::Of<'a>>,
         }
 
@@ -274,16 +294,19 @@ pub mod visitor_crate {
                 if let Start = self.next_step {
                     self.next_step = EnterInside;
                     // SAFETY: No references derived from `this` are live because we haven't
-                    // created one yet. Moreover `this` is borrowed for `'a` so we can return a
-                    // derived borrow with lifetime `'a`.
+                    // created one yet. Moreover `*this` is borrowed for `'a` so we can return a
+                    // derived borrow with lifetime smaller than `'a`.
                     let this = unsafe { &mut *self.this };
                     return Some((this as &mut dyn Any, Enter));
                 }
                 if let EnterInside = self.next_step {
                     // SAFETY: No references derived from `this` are live because the only one we
                     // created was returned and the borrow-checker guarantees `next()` can only be
-                    // called again after it is dropped. Moreover `this` is borrowed for `'a` so we
-                    // can return a derived borrow with lifetime `'a`.
+                    // called again after it is dropped.
+                    // We are lying about lifetimes here: the walked is constructed with lifetime
+                    // `'a` even though we will invalidate the derived reference before the end of
+                    // `'a`. The user can't know thanks to the HRTB, so this is safe if we drop the
+                    // walker before we invalidate the reference it was constructed from.
                     let this = unsafe { &mut *self.this };
                     let walker = (self.walk_inside.take().unwrap())(this);
                     self.next_step = WalkInside(walker);
@@ -293,14 +316,13 @@ pub mod visitor_crate {
                     if let Some(next) = walker.next() {
                         return Some(next);
                     } else {
-                        // This drops `W`.
+                        // This drops the walker.
                         self.next_step = Done;
-                        // SAFETY: No references derived from `this` are live because the HKT of
-                        // `F` guarantees all borrows of `this` flow into `W`, and the
-                        // borrow-checker guarantees `next()` can only be called again after
-                        // borrows derived from `W` are dropped. Finally, we dropped `W` on the
-                        // line above. Moreover `this` is borrowed for `'a` so we can return a
-                        // derived borrow with lifetime `'a`.
+                        // SAFETY: The HRTB on `F` guarantees that any borrows derived from the
+                        // argument we passed to `walk_inside` must have flowed into `W`. Since we
+                        // just dropped the walker, there are no live references derived from
+                        // `this`. Moreover `*this` is borrowed for `'a` so we can return a derived
+                        // borrow with lifetime smaller than `'a`.
                         let this = unsafe { &mut *self.this };
                         return Some((this as &mut dyn Any, Exit));
                     }
@@ -318,6 +340,7 @@ pub mod visitor_crate {
         }
     }
 
+    /// The inner workings of `single`.
     pub mod single {
         use crate::*;
         use std::any::Any;
@@ -346,7 +369,7 @@ pub mod visitor_crate {
 
     /// Visit all subobjects of type `U` of `obj`
     pub fn visit<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U, Event)) {
-        obj.walk().inspect_t(callback).run();
+        obj.walk().inspect_t(callback).run_to_completion();
     }
 }
 
@@ -380,7 +403,7 @@ fn main() {
             println!("Zeroing some u8({e:?}): {x}");
             *x = 0;
         })
-        .run();
+        .run_to_completion();
 
     // Now the point is all 0s. Set some nice values instead.
     let mut walker = p.walk().filter(|(_, e)| matches!(e, Event::Enter));
