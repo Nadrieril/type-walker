@@ -105,9 +105,9 @@ We also support shared-state visitors using the `VisitorBuilder` API:
 ```rust
 // Build a visitor with access to `state` that will be called on objects of types `Type1` and
 // `Type2`.
-let visitor = VisitorBuilder::new(&mut state)
-    .on(|state, x: &mut Type1, e| ...)
-    .on(|state, x: &mut Type2, e| ...);
+let visitor = VisitorBuilder::new_mut(&mut state)
+    .on_mut(|state, x: &mut Type1, e| ...)
+    .on_mut(|state, x: &mut Type2, e| ...);
 // Walk `val` with the visitor.
 val.walk().inspect_with(visitor).run_to_completion();
 ```
