@@ -11,7 +11,6 @@ use lending_iterator::prelude::*;
 pub use outer_walker::OuterWalker;
 use std::any::Any;
 pub use walk_driver::WalkDriver;
-pub use zip_walkers::ZipWalkers;
 
 /// A type that can be walked.
 ///
@@ -70,13 +69,13 @@ pub trait TypeWalker:
         })
     }
 
-    /// Provided method that calls `f` on each visited item of type `T`. Returns a new visitor
-    /// that visits on the same items (of course `f` may have modified them in flight).
+    /// Calls `f` on each visited item of type `T`. Returns a new visitor that visits on the same
+    /// items (of course `f` may have modified them in flight).
     fn inspect_t<T: 'static, F: FnMut(&mut T, Event)>(
         self,
         mut f: F,
     ) -> Inspect<Self, impl FnMut(&mut (&mut dyn Any, Event))> {
-        self.inspect(move |(next, event): &mut (&mut dyn Any, Event)| {
+        self.inspect(move |(next, event)| {
             if let Some(next_t) = (*next).downcast_mut::<T>() {
                 f(next_t, *event)
             }
@@ -98,7 +97,7 @@ pub trait TypeWalker:
         self,
         mut v: V,
     ) -> Inspect<Self, impl FnMut(&mut (&mut dyn Any, Event))> {
-        self.inspect(move |(next, event): &mut (&mut dyn Any, Event)| v.visit(*next, *event))
+        self.inspect(move |(next, event)| v.visit(*next, *event))
     }
 
     /// Runs to completion. Convenient in combination with `inspect_t`.
@@ -265,65 +264,6 @@ mod single {
                 Exit => None,
             };
             Some((self.val, e))
-        }
-    }
-}
-
-/// Zips a number of identical walkers.
-///
-/// Assuming they output the same types and events in the same order, this can be used to iterate
-/// over multiple values in lockstep. The output is not a `TypeWalker` because the types don't
-/// match, however it has appropriate convenience methods to consume it.
-pub fn zip_walkers<I: TypeWalker, const N: usize>(walkers: [I; N]) -> ZipWalkers<I, N> {
-    ZipWalkers { walkers }
-}
-
-/// Zips a number of identical walkables.
-///
-/// See [`zip_walkers()`] for details.
-pub fn zip_walkables<T: Walkable, const N: usize>(
-    walkables: [&mut T; N],
-) -> ZipWalkers<OuterWalker<'_, T>, N> {
-    zip_walkers(walkables.map(|x| x.walk()))
-}
-
-/// The inner workings of `zip_walkers`.
-mod zip_walkers {
-    use super::*;
-    use std::any::Any;
-
-    /// The output of [`zip_walkers()`] and [`zip_walkables()`].
-    pub struct ZipWalkers<I, const N: usize> {
-        pub(super) walkers: [I; N],
-    }
-
-    impl<I: TypeWalker, const N: usize> ZipWalkers<I, N> {
-        /// Returns the next value of type `T`.
-        pub fn next_t<T: 'static>(&mut self) -> Option<([&mut T; N], Event)> {
-            use polonius_the_crab::*;
-            let mut this = self;
-            polonius_loop!(|this| -> Option<([&'polonius mut T; N], Event)> {
-                let (next, e) = polonius_try!(this.next());
-                let ts: Option<[&mut T; N]> = next.try_map(|v| v.downcast_mut::<T>());
-                if let Some(ts) = ts {
-                    polonius_return!(Some((ts, e)));
-                }
-            })
-        }
-    }
-
-    #[nougat::gat]
-    impl<I: TypeWalker, const N: usize> LendingIterator for ZipWalkers<I, N> {
-        type Item<'item> = ([&'item mut dyn Any; N], Event);
-        fn next(&mut self) -> Option<Item<'_, Self>> {
-            let nexts = self.walkers.each_mut().try_map(|walker| walker.next())?;
-            let events: [Event; N] = nexts.each_ref().map(|(_, e)| *e);
-            let event = events[0];
-            if events.iter().any(|e| *e != event) {
-                return None;
-            }
-            let nexts: [&mut dyn Any; N] = nexts.map(|(x, _)| x);
-            Some((nexts, event))
         }
     }
 }
