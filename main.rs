@@ -442,7 +442,7 @@ impl Walkable for u8 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Point {
     x: u8,
     y: u8,
@@ -462,7 +462,7 @@ impl Walkable for Point {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum OneOrTwo {
     One(u8),
     Two(Point),
@@ -485,21 +485,34 @@ impl Walkable for OneOrTwo {
     }
 }
 
-fn main() {
+#[test]
+fn test_inspect() {
+    use Event::*;
     let mut p = Point { x: 42, y: 12 };
     p.walk()
-        .inspect_t(|p: &mut Point, e| {
-            println!("We got a Point({e:?}): {p:?}");
+        .inspect_t(|p: &mut Point, e| match e {
+            Enter => {
+                assert_eq!(p.x, 42);
+                assert_eq!(p.y, 12);
+            }
+            Exit => {
+                assert_eq!(p.x, 44);
+                assert_eq!(p.y, 14);
+            }
         })
-        .inspect_t(|x: &mut u8, e| {
-            println!("Zeroing some u8({e:?}): {x}");
-            *x = 0;
+        .inspect_t(|x: &mut u8, _| {
+            *x += 1;
         })
         .run_to_completion();
 
-    // Now the point is all 0s. We set some nice values instead, going through `OneOrTwo` for
-    // demonstration purposes.
-    let mut one_or_two = OneOrTwo::Two(p);
+    assert_eq!(p.x, 44);
+    assert_eq!(p.y, 14);
+}
+
+#[test]
+fn test_nested() {
+    let mut one_or_two = OneOrTwo::Two(Point { x: 42, y: 12 });
+
     let mut walker = one_or_two.walk().filter(|(_, e)| matches!(e, Event::Enter));
     let (x, _) = walker.next_t::<u8>().unwrap();
     *x = 101;
@@ -508,7 +521,7 @@ fn main() {
     assert!(walker.next().is_none());
     drop(walker);
 
-    println!("Final state of the value: {one_or_two:?}");
+    assert_eq!(one_or_two, OneOrTwo::Two(Point { x: 101, y: 202 }));
 }
 
 #[test]
