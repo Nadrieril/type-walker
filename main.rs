@@ -150,6 +150,38 @@ pub mod lending_iterator {
             }
         }
     }
+
+    pub enum Either<L, R> {
+        Left(L),
+        Right(R),
+    }
+
+    /// The inner workings of `Either`.
+    pub mod either {
+        use crate::*;
+
+        impl<'item, I, J> LendingIteratorItem<'item> for Either<I, J>
+        where
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item, Item = I::Item>,
+        {
+            type Item = I::Item;
+        }
+
+        impl<I, J> LendingIterator for Either<I, J>
+        where
+            I: LendingIterator,
+            J: LendingIterator,
+            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
+        {
+            fn next(&mut self) -> Option<Item<'_, I>> {
+                match self {
+                    Self::Left(l) => l.next(),
+                    Self::Right(r) => r.next(),
+                }
+            }
+        }
+    }
 }
 
 /// The visitor crate would provide these definitions.
@@ -373,6 +405,13 @@ pub mod visitor {
     }
 }
 
+impl Walkable for u8 {
+    type Walker<'a> = impl TypeWalker;
+    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
+        single(self)
+    }
+}
+
 #[derive(Debug)]
 pub struct Point {
     x: u8,
@@ -384,11 +423,29 @@ impl Walkable for Point {
     type Walker<'a> = impl TypeWalker;
     fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
         use chain::Chain;
-        use single::Single;
-        // Unfortunately, safety forces us to use a higher-kinded type, which forces the user to
-        // specify the walker type in this way.
-        walk_this_and_inside::<_, _, ForLt!(Chain<Single<'_, u8>, Single<'_, u8>>)>(self, |this| {
-            single(&mut this.x).chain(single(&mut this.y))
+        // Safety forces us to use a higher-kinded type, which forces the user to specify the
+        // walker type in this way.
+        type WalkerHKT = ForLt!(Chain<<u8 as Walkable>::Walker<'_>, <u8 as Walkable>::Walker<'_>>);
+        walk_this_and_inside::<_, _, WalkerHKT>(self, |this| this.x.walk().chain(this.y.walk()))
+    }
+}
+
+#[derive(Debug)]
+pub enum OneOrTwo {
+    One(u8),
+    Two(Point),
+}
+
+// This can be derived automatically.
+impl Walkable for OneOrTwo {
+    type Walker<'a> = impl TypeWalker;
+    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
+        use Either;
+        type WalkerHKT =
+            ForLt!(Either<<u8 as Walkable>::Walker<'_>, <Point as Walkable>::Walker<'_>>);
+        walk_this_and_inside::<_, _, WalkerHKT>(self, |this| match this {
+            OneOrTwo::One(one) => Either::Left(one.walk()),
+            OneOrTwo::Two(two) => Either::Right(two.walk()),
         })
     }
 }
@@ -405,8 +462,10 @@ fn main() {
         })
         .run_to_completion();
 
-    // Now the point is all 0s. Set some nice values instead.
-    let mut walker = p.walk().filter(|(_, e)| matches!(e, Event::Enter));
+    // Now the point is all 0s. We set some nice values instead, going through `OneOrTwo` for
+    // demonstration purposes.
+    let mut one_or_two = OneOrTwo::Two(p);
+    let mut walker = one_or_two.walk().filter(|(_, e)| matches!(e, Event::Enter));
     let (x, _) = walker.next_t::<u8>().unwrap();
     *x = 101;
     let (y, _) = walker.next_t::<u8>().unwrap();
@@ -414,5 +473,5 @@ fn main() {
     assert!(walker.next().is_none());
     drop(walker);
 
-    println!("Final state of the Point: {p:?}");
+    println!("Final state of the value: {one_or_two:?}");
 }
