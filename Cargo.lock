@@ -11,7 +11,7 @@ checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 [[package]]
 name = "derive-visitor"
 version = "0.4.0"
-source = "git+https://github.com/Nadrieril/derive-visitor#1ce71dab2c7f92e557114842b30066fdbf508a11"
+source = "git+https://github.com/Nadrieril/derive-visitor#a1f1ca104f31d13dbd02d3bcc0dc8e162089c2ec"
 dependencies = [
  "derive-visitor-macros",
 ]
@@ -19,7 +19,7 @@ dependencies = [
 [[package]]
 name = "derive-visitor-macros"
 version = "0.4.0"
-source = "git+https://github.com/Nadrieril/derive-visitor#1ce71dab2c7f92e557114842b30066fdbf508a11"
+source = "git+https://github.com/Nadrieril/derive-visitor#a1f1ca104f31d13dbd02d3bcc0dc8e162089c2ec"
 dependencies = [
  "convert_case",
  "itertools",

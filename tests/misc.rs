@@ -60,9 +60,9 @@ fn test_inspect() {
 #[test]
 fn test_visitor_builder() {
     let mut state = 0;
-    let visitor = VisitorBuilder::new(&mut state)
-        .on(|s, x: &mut u8, _| *s += *x)
-        .on(|s, x: &mut u8, _| *s += *x);
+    let visitor = VisitorBuilder::new_mut(&mut state)
+        .on_mut(|s, x: &mut u8, _| *s += *x)
+        .on_mut(|s, x: &mut u8, _| *s += *x);
     let mut p = Point { x: 42, y: 12 };
     p.walk().inspect_with(visitor).run_to_completion();
 
