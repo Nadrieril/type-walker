@@ -1,14 +1,16 @@
 #![feature(impl_trait_in_assoc_type)]
+
 use lending_iterator::*;
 use visitor::*;
 
 /// The lending iterator trait and helpers.
 // I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
-// because that one doesn't have `inspect` and `chain`.
+// because that one doesn't have `inspect`, `chain` or `zip`.
 pub mod lending_iterator {
     pub use chain::Chain;
     pub use filter::Filter;
     pub use inspect::Inspect;
+    pub use zip::Zip;
 
     // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
     // GAT we can't write the `TypeWalker` trait alias because the `Self: 'a` bound makes the
@@ -21,26 +23,31 @@ pub mod lending_iterator {
         fn next(&mut self) -> Option<Item<'_, Self>>;
 
         /// Like `Iterator::inspect`.
-        fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> inspect::Inspect<Self, F> {
-            inspect::Inspect { iter: self, f }
+        fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> Inspect<Self, F> {
+            Inspect { iter: self, f }
         }
 
         /// Like `Iterator::filter`.
-        fn filter<F: for<'a> FnMut(&Item<'a, Self>) -> bool>(
-            self,
-            f: F,
-        ) -> filter::Filter<Self, F> {
-            filter::Filter { iter: self, f }
+        fn filter<F: for<'a> FnMut(&Item<'a, Self>) -> bool>(self, f: F) -> Filter<Self, F> {
+            Filter { iter: self, f }
         }
 
         /// Like `Iterator::chain`.
-        fn chain<J: LendingIterator>(self, other: J) -> chain::Chain<Self, J>
+        fn chain<I: LendingIterator>(self, other: I) -> Chain<Self, I>
         where
-            J: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
+            I: for<'item> LendingIteratorItem<'item, Item = Item<'item, Self>>,
         {
-            chain::Chain {
+            Chain {
                 first: Some(self),
                 second: Some(other),
+            }
+        }
+
+        /// Like `Iterator::zip`.
+        fn zip<I: LendingIterator>(self, other: I) -> Zip<Self, I> {
+            Zip {
+                first: self,
+                second: other,
             }
         }
     }
@@ -153,6 +160,36 @@ pub mod lending_iterator {
         }
     }
 
+    /// The inner workings of `LendingIterator::zip`.
+    pub mod zip {
+        use crate::*;
+
+        pub struct Zip<I, J> {
+            pub(super) first: I,
+            pub(super) second: J,
+        }
+
+        impl<'item, I, J> LendingIteratorItem<'item> for Zip<I, J>
+        where
+            I: LendingIteratorItem<'item>,
+            J: LendingIteratorItem<'item>,
+        {
+            type Item = (I::Item, J::Item);
+        }
+
+        impl<I, J> LendingIterator for Zip<I, J>
+        where
+            I: LendingIterator,
+            J: LendingIterator,
+        {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
+                let first = self.first.next()?;
+                let second = self.second.next()?;
+                Some((first, second))
+            }
+        }
+    }
+
     pub enum Either<L, R> {
         Left(L),
         Right(R),
@@ -214,6 +251,16 @@ pub mod visitor {
         + LendingIterator
         + for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>
     {
+        /// Returns the next value of type `T`.
+        fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
+            while let Some((next, e)) = self.next() {
+                if let Some(next) = next.downcast_mut::<T>() {
+                    return Some((next, e));
+                }
+            }
+            None
+        }
+
         /// Provided method that calls `f` on each visited item of type `T`. Returns a new visitor
         /// that visits on the same items (of course `f` may have modified them in flight).
         fn inspect_t<T: 'static, F: FnMut(&mut T, Event)>(
@@ -225,16 +272,6 @@ pub mod visitor {
                     f(next_t, *event)
                 }
             })
-        }
-
-        /// Returns the next value of type `T`.
-        fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
-            while let Some((next, e)) = self.next() {
-                if let Some(next) = next.downcast_mut::<T>() {
-                    return Some((next, e));
-                }
-            }
-            None
         }
 
         /// Runs to completion. Convenient in combination with `inspect_t`.
@@ -472,4 +509,31 @@ fn main() {
     drop(walker);
 
     println!("Final state of the value: {one_or_two:?}");
+}
+
+#[test]
+fn test_zip() {
+    use Event::*;
+    let mut p = Point { x: 10, y: 20 };
+    let mut q = Point { x: 100, y: 200 };
+    let mut iter = p.walk().zip(q.walk());
+
+    let ((_, Enter), (_, Enter)) = iter.next().unwrap() else {
+        panic!()
+    };
+
+    let ((p_x, Enter), (q_x, Enter)) = iter.next().unwrap() else {
+        panic!()
+    };
+    let p_x = p_x.downcast_mut::<u8>().unwrap();
+    let q_x = q_x.downcast_mut::<u8>().unwrap();
+    assert_eq!(*p_x, 10);
+    assert_eq!(*q_x, 100);
+    *p_x += 1;
+    *q_x += 1;
+
+    drop(iter);
+
+    assert_eq!(p.x, 11);
+    assert_eq!(q.x, 101);
 }
