@@ -3,10 +3,7 @@
 
 use std::fmt::Display;
 
-use type_walker::{
-    lending_iterator_ext::{Either, LendingIteratorExt},
-    walker::{empty_walker, InnerWalkable, TypeWalker, Walkable},
-};
+use type_walker::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {

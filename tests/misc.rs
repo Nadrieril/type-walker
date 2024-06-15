@@ -1,6 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 
-use type_walker::*;
+use type_walker::prelude::*;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Point {

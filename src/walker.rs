@@ -1,27 +1,47 @@
-use crate::lending_iterator_ext::Inspect;
-use crate::*;
+//! Traits and utilities for iterating over the contents of a value.
+//!
+//! The main trait of this crate is [`Walkable`], which describes a type that can be recursively
+//! walked. Calling `x.walk()` gives an iterator that yields the sub-objects of `x` in a
+//! dynamically-typed fashion. The methods provided by this module can be used to specialize this
+//! exploration to types of interest.
+use crate::lending_iterator_ext::*;
+use crate::visitor::*;
 use higher_kinded_types::ForLt;
 use lending_iterator::prelude::*;
 use std::any::Any;
-use zip_walkers::ZipWalkers;
+pub use zip_walkers::ZipWalkers;
 
-/// A type that can be visited.
+/// A type that can be walked.
+///
+/// This is similar to [`IntoIterator`], but here `Walker` may borrow from `self`, and is a
+/// [`TypeWalker`] instead of an arbitrary iterator.
+///
+/// When walking over a value, the intent is to yield twice for each subobject: the first time we
+/// encounter the object we yield `(&mut object, Event::Enter)`; after that we walk subobjects of
+/// `object`; once we're done we yield `(&mut object, Event::Exit)`.
+///
+/// To implement this trait, implement [`InnerWalkable`] and call
+/// [`InnerWalkable::walk_this_and_inside`] to handle `(self, Enter)`/`(self, Exit)` for you.
 pub trait Walkable {
     type Walker<'a>: TypeWalker
     where
         Self: 'a;
+
+    /// Walk over this value and its subobjects.
     fn walk<'a>(&'a mut self) -> Self::Walker<'a>;
 }
 
+/// Defines whether an item is being entered or exited by a visitor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     Enter,
     Exit,
 }
 
-/// A type visitor.
-/// This is a trait alias for the right kind of lending iterator, with extra provided methods
-/// for convenience.
+/// An dynamically-typed iterator over the subobjects of a value.
+///
+/// This is a trait alias for a lending iterator that yields `(&mut dyn Any, Event)`. It provides
+/// convenience methods for dealing with downcasting the yielded objects.
 #[nougat::apply(nougat::Gat!)]
 pub trait TypeWalker:
     Sized + LendingIterator + for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>
@@ -79,6 +99,7 @@ pub trait TypeWalker:
         }
     }
 }
+
 /// Blanket impl for all lending iterators of the right type.
 // This is the reason we can't use a clean GAT-based lending iterator: when we do, this
 // `for<'item>` bound forces `Self: 'static` which prevents our usecase.
@@ -90,10 +111,13 @@ where
 {
 }
 
-/// Trait for the common case of types that are walked by yielding `(self, Enter)`, walking
-/// over the contents, and finally yielding `(self, Exit)`.
-pub trait InnerWalkable: Any {
+/// A convenience trait for types that are walked as described in the doc of [`Walkable`].
+///
+/// Implement `walk_inner` that walks over the contents of `self`, and use `walk_this_and_inside`
+/// to get a walker that also yields `self` on enter and exit.
+pub trait InnerWalkable: Walkable + Any {
     type InnerWalker<'a>: TypeWalker;
+    /// Walk over the contents of `self`.
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a>;
 
     /// Yields `(self, Enter)`, walks over the inner walker, and finishes by yielding `(self,
@@ -111,9 +135,8 @@ pub trait InnerWalkable: Any {
 }
 
 /// The inner workings of `walk_this_and_inside`.
-pub mod walk_this_and_inside {
-    use crate::*;
-    use lending_iterator::prelude::*;
+mod walk_this_and_inside {
+    use super::*;
     use std::any::Any;
     use std::marker::PhantomData;
 
@@ -194,11 +217,12 @@ pub mod walk_this_and_inside {
     }
 }
 
+/// A walker over no objects.
 pub fn empty_walker() -> Empty<ForLt!((&'_ mut dyn Any, Event))> {
     empty()
 }
 
-// Visits a single type (without looking deeper into it). Can be used to visit base types.
+/// A walker over a single object (with no subobjects).
 pub fn single<'a, T: 'static>(val: &'a mut T) -> single::Single<'a, T> {
     single::Single {
         val,
@@ -207,9 +231,8 @@ pub fn single<'a, T: 'static>(val: &'a mut T) -> single::Single<'a, T> {
 }
 
 /// The inner workings of `single`.
-pub mod single {
-    use crate::*;
-    use lending_iterator::prelude::*;
+mod single {
+    use super::*;
     use std::any::Any;
 
     pub struct Single<'a, T> {
@@ -232,14 +255,18 @@ pub mod single {
     }
 }
 
-/// Zips a number of identical walkers. Assuming they output the same types and events in the
-/// same order, this can be used to iterate over multiple values in lockstep. The output is not
-/// a `TypeWalker` because the types don't match, however it has appropriate convenience
-/// methods to consume it.
+/// Zips a number of identical walkers.
+///
+/// Assuming they output the same types and events in the same order, this can be used to iterate
+/// over multiple values in lockstep. The output is not a `TypeWalker` because the types don't
+/// match, however it has appropriate convenience methods to consume it.
 pub fn zip_walkers<I: TypeWalker, const N: usize>(walkers: [I; N]) -> ZipWalkers<I, N> {
     ZipWalkers { walkers }
 }
 
+/// Zips a number of identical walkables.
+///
+/// See [`zip_walkers`] for details.
 pub fn zip_walkables<T: Walkable, const N: usize>(
     walkables: [&mut T; N],
 ) -> ZipWalkers<T::Walker<'_>, N> {
@@ -247,11 +274,11 @@ pub fn zip_walkables<T: Walkable, const N: usize>(
 }
 
 /// The inner workings of `zip_walkers`.
-pub mod zip_walkers {
-    use crate::*;
-    use lending_iterator::prelude::*;
+mod zip_walkers {
+    use super::*;
     use std::any::Any;
 
+    /// The output of [`zip_walkers()`] and [`zip_walkables()`].
     pub struct ZipWalkers<I, const N: usize> {
         pub(super) walkers: [I; N],
     }
@@ -287,18 +314,19 @@ pub mod zip_walkers {
     }
 }
 
-/// Visit all subobjects of type `U` of `obj`
+/// Visit all subobjects of type `U` of `obj`.
 pub fn visit<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U, Event)) {
     obj.walk().inspect_t(callback).run_to_completion();
 }
 
+/// Visit all subobjects of type `U` of `obj`, and only on `Enter`.
 pub fn visit_enter<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U)) {
     obj.walk().inspect_enter(callback).run_to_completion();
 }
 
 /// Implementations on std types.
 mod std_impls {
-    use crate::Walkable;
+    use super::Walkable;
 
     impl<T: Walkable> Walkable for Box<T> {
         // Box the walker otherwise recursive structures will have infinite-size walkers.

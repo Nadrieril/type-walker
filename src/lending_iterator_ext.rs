@@ -1,15 +1,17 @@
+//! Extra combinators and utilities for using [`lending_iterator::LendingIterator`].
 use higher_kinded_types::ForLifetime;
 use std::marker::PhantomData;
 
 pub use chain::Chain;
+pub use either::Either;
 pub use empty::Empty;
+pub use higher_kinded_types::ForLt;
 pub use inspect::Inspect;
 pub use zip::Zip;
 
-use ::lending_iterator::prelude::*;
-pub use ::lending_iterator::LendingIterator;
+use lending_iterator::prelude::*;
 
-// Extension trait to add extra methods.
+/// Extension trait to [`lending_iterator::LendingIterator`] to provide it with extra combinators.
 #[nougat::gat]
 pub trait LendingIteratorExt: LendingIterator + Sized {
     /// Like `Iterator::inspect`.
@@ -39,10 +41,10 @@ pub trait LendingIteratorExt: LendingIterator + Sized {
 impl<T: LendingIterator> LendingIteratorExt for T {}
 
 /// The inner workings of `LendingIterator::inspect`.
-pub mod inspect {
-    use crate::*;
-    use ::lending_iterator::prelude::*;
+mod inspect {
+    use super::*;
 
+    /// Output of [`LendingIteratorExt::inspect()`].
     pub struct Inspect<I, F> {
         pub(super) iter: I,
         pub(super) f: F,
@@ -66,10 +68,10 @@ pub mod inspect {
 }
 
 /// The inner workings of `LendingIterator::chain`.
-pub mod chain {
-    use crate::*;
-    use ::lending_iterator::prelude::*;
+mod chain {
+    use super::*;
 
+    /// Output of [`LendingIteratorExt::chain()`].
     pub struct Chain<I, J> {
         pub(super) first: Option<I>,
         pub(super) second: Option<J>,
@@ -108,10 +110,10 @@ pub mod chain {
 }
 
 /// The inner workings of `LendingIterator::zip`.
-pub mod zip {
-    use crate::*;
-    use ::lending_iterator::prelude::*;
+mod zip {
+    use super::*;
 
+    /// Output of [`LendingIteratorExt::zip()`].
     pub struct Zip<I, J> {
         pub(super) first: I,
         pub(super) second: J,
@@ -132,15 +134,15 @@ pub mod zip {
     }
 }
 
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
 /// The inner workings of `Either`.
-pub mod either {
-    use crate::*;
-    use ::lending_iterator::prelude::*;
+mod either {
+    use super::*;
+
+    /// Type for building iterators out of several possible alternatives.
+    pub enum Either<L, R> {
+        Left(L),
+        Right(R),
+    }
 
     #[nougat::gat]
     impl<I, J> LendingIterator for Either<I, J>
@@ -159,17 +161,24 @@ pub mod either {
     }
 }
 
-/// Empty iterator.
+/// Empty iterator. Use [`ForLt!`] to set the type of item it will use.
+///
+/// E.g.:
+/// ```rust
+/// # use type_walker::lending_iterator_ext::*;
+/// let _iter = empty::<ForLt!(&'_ str)>();
+/// ```
 pub fn empty<HKT: ForLifetime>() -> Empty<HKT> {
     Empty(PhantomData)
 }
 
 /// The inner workings of `empty`.
-pub mod empty {
-    use ::lending_iterator::prelude::*;
+mod empty {
+    use super::*;
     use higher_kinded_types::ForLifetime;
     use std::marker::PhantomData;
 
+    /// Output of [`empty()`].
     pub struct Empty<HKT>(pub(super) PhantomData<HKT>);
 
     type HKTOf<'lt, HKT> = <HKT as ForLifetime>::Of<'lt>;
