@@ -4,7 +4,7 @@
 use std::fmt::Display;
 
 use type_walker::{
-    lending_iterator::{Either, LendingIterator},
+    lending_iterator_ext::{Either, LendingIteratorExt},
     walker::{empty_walker, InnerWalkable, TypeWalker, Walkable},
 };
 

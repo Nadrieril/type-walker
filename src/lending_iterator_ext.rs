@@ -3,28 +3,18 @@ use std::marker::PhantomData;
 
 pub use chain::Chain;
 pub use empty::Empty;
-pub use filter::Filter;
 pub use inspect::Inspect;
 pub use zip::Zip;
 
-// GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real GAT we
-// can't write the `TypeWalker` trait alias because of a type-checker limitation.
+use ::lending_iterator::prelude::*;
+pub use ::lending_iterator::LendingIterator;
+
+// Extension trait to add extra methods.
 #[nougat::gat]
-pub trait LendingIterator: Sized {
-    type Item<'item>
-    where
-        Self: 'item;
-
-    fn next(&mut self) -> Option<Item<'_, Self>>;
-
+pub trait LendingIteratorExt: LendingIterator + Sized {
     /// Like `Iterator::inspect`.
     fn inspect<F: for<'a> FnMut(&mut Item<'a, Self>)>(self, f: F) -> Inspect<Self, F> {
         Inspect { iter: self, f }
-    }
-
-    /// Like `Iterator::filter`.
-    fn filter<F: for<'a> FnMut(&Item<'a, Self>) -> bool>(self, f: F) -> Filter<Self, F> {
-        Filter { iter: self, f }
     }
 
     /// Like `Iterator::chain`.
@@ -46,13 +36,12 @@ pub trait LendingIterator: Sized {
         }
     }
 }
-
-/// Type alias for convenience.
-pub type Item<'item, I> = nougat::Gat!(<I as LendingIterator>::Item<'item>);
+impl<T: LendingIterator> LendingIteratorExt for T {}
 
 /// The inner workings of `LendingIterator::inspect`.
 pub mod inspect {
     use crate::*;
+    use ::lending_iterator::prelude::*;
 
     pub struct Inspect<I, F> {
         pub(super) iter: I,
@@ -76,38 +65,10 @@ pub mod inspect {
     }
 }
 
-/// The inner workings of `LendingIterator::filter`.
-pub mod filter {
-    use crate::*;
-
-    pub struct Filter<I, F> {
-        pub(super) iter: I,
-        pub(super) f: F,
-    }
-
-    #[nougat::gat]
-    impl<I, F> LendingIterator for Filter<I, F>
-    where
-        I: LendingIterator,
-        F: for<'a> FnMut(&Item<'a, I>) -> bool,
-    {
-        type Item<'item> = Item<'item, I>;
-        fn next(&mut self) -> Option<Item<'_, Self>> {
-            use polonius_the_crab::*;
-            let mut this = self;
-            polonius_loop!(|this| -> Option<Item<'polonius, Self>> {
-                let next = polonius_try!(this.iter.next());
-                if (this.f)(&next) {
-                    polonius_return!(Some(next));
-                }
-            })
-        }
-    }
-}
-
 /// The inner workings of `LendingIterator::chain`.
 pub mod chain {
     use crate::*;
+    use ::lending_iterator::prelude::*;
 
     pub struct Chain<I, J> {
         pub(super) first: Option<I>,
@@ -149,6 +110,7 @@ pub mod chain {
 /// The inner workings of `LendingIterator::zip`.
 pub mod zip {
     use crate::*;
+    use ::lending_iterator::prelude::*;
 
     pub struct Zip<I, J> {
         pub(super) first: I,
@@ -178,6 +140,7 @@ pub enum Either<L, R> {
 /// The inner workings of `Either`.
 pub mod either {
     use crate::*;
+    use ::lending_iterator::prelude::*;
 
     #[nougat::gat]
     impl<I, J> LendingIterator for Either<I, J>
@@ -203,10 +166,9 @@ pub fn empty<HKT: ForLifetime>() -> Empty<HKT> {
 
 /// The inner workings of `empty`.
 pub mod empty {
+    use ::lending_iterator::prelude::*;
     use higher_kinded_types::ForLifetime;
     use std::marker::PhantomData;
-
-    use crate::*;
 
     pub struct Empty<HKT>(pub(super) PhantomData<HKT>);
 
@@ -217,19 +179,6 @@ pub mod empty {
         type Item<'item> = HKTOf<HKT, 'item>;
         fn next(&mut self) -> Option<Item<'_, Self>> {
             None
-        }
-    }
-}
-
-/// Implementations on std types.
-mod std_impls {
-    use crate::{Item, LendingIterator, LendingIteratorඞItem};
-
-    #[nougat::gat]
-    impl<I: LendingIterator> LendingIterator for Box<I> {
-        type Item<'item> = Item<'item, I>;
-        fn next(&mut self) -> Option<Item<'_, Self>> {
-            (**self).next()
         }
     }
 }

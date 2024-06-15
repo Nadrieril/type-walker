@@ -1,6 +1,7 @@
-use crate::lending_iterator::inspect::Inspect;
+use crate::lending_iterator_ext::Inspect;
 use crate::*;
 use higher_kinded_types::ForLt;
+use lending_iterator::prelude::*;
 use std::any::Any;
 use zip_walkers::ZipWalkers;
 
@@ -112,6 +113,7 @@ pub trait InnerWalkable: Any {
 /// The inner workings of `walk_this_and_inside`.
 pub mod walk_this_and_inside {
     use crate::*;
+    use lending_iterator::prelude::*;
     use std::any::Any;
     use std::marker::PhantomData;
 
@@ -207,6 +209,7 @@ pub fn single<'a, T: 'static>(val: &'a mut T) -> single::Single<'a, T> {
 /// The inner workings of `single`.
 pub mod single {
     use crate::*;
+    use lending_iterator::prelude::*;
     use std::any::Any;
 
     pub struct Single<'a, T> {
@@ -246,6 +249,7 @@ pub fn zip_walkables<T: Walkable, const N: usize>(
 /// The inner workings of `zip_walkers`.
 pub mod zip_walkers {
     use crate::*;
+    use lending_iterator::prelude::*;
     use std::any::Any;
 
     pub struct ZipWalkers<I, const N: usize> {
