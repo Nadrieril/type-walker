@@ -5,7 +5,7 @@ This is a toy crate that provides an API to visit the fields and sub-fields of a
 [derive-visitor](https://crates.io/crates/derive-visitor), but the iterator-like interface is a lot
 more flexible to use.
 
-This comes at the cost of type-level hacks, bit of `unsafe`, and having to work around
+This comes at the cost of type-level hacks, a bit of `unsafe`, and having to work around
 borrow-checker limitations.
 
 ## Overview
@@ -128,7 +128,7 @@ For structs, use `LendingIterator::chain` to chain the iterators over each field
 `empty_walker()` can be used for structs without fields.
 
 For enums, use `Either` to handle alternatives with different types. If there are more than two
-alternatives, you will have to next `Either`s.
+alternatives, you will have to nest `Either`s.
 
 ```rust
 pub enum OneOrTwo {
