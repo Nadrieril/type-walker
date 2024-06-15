@@ -221,6 +221,20 @@ pub mod lending_iterator {
             }
         }
     }
+
+    #[test]
+    fn test_simple_lending_iterator() {
+        struct RepeatRef<T>(T);
+        impl<'item, T> LendingIteratorItem<'item> for RepeatRef<T> {
+            type Item = &'item mut T;
+        }
+
+        impl<T> LendingIterator for RepeatRef<T> {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
+                Some(&mut self.0)
+            }
+        }
+    }
 }
 
 /// The visitor crate would provide these definitions.
