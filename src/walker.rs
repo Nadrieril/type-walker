@@ -1,5 +1,6 @@
 use crate::lending_iterator::inspect::Inspect;
 use crate::*;
+use higher_kinded_types::ForLt;
 use std::any::Any;
 use zip_walkers::ZipWalkers;
 
@@ -44,6 +45,17 @@ pub trait TypeWalker:
         self.inspect(move |(next, event): &mut (&mut dyn Any, Event)| {
             if let Some(next_t) = (*next).downcast_mut::<T>() {
                 f(next_t, *event)
+            }
+        })
+    }
+
+    fn inspect_enter<T: 'static, F: FnMut(&mut T)>(
+        self,
+        mut f: F,
+    ) -> Inspect<Self, impl FnMut(&mut (&mut dyn Any, Event))> {
+        self.inspect_t(move |obj, e| {
+            if matches!(e, Event::Enter) {
+                f(obj)
             }
         })
     }
@@ -173,6 +185,10 @@ pub mod walk_this_and_inside {
     }
 }
 
+pub fn empty_walker() -> Empty<ForLt!((&'_ mut dyn Any, Event))> {
+    empty()
+}
+
 // Visits a single type (without looking deeper into it). Can be used to visit base types.
 pub fn single<'a, T: 'static>(val: &'a mut T) -> single::Single<'a, T> {
     single::Single {
@@ -267,4 +283,21 @@ pub mod zip_walkers {
 /// Visit all subobjects of type `U` of `obj`
 pub fn visit<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U, Event)) {
     obj.walk().inspect_t(callback).run_to_completion();
+}
+
+pub fn visit_enter<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U)) {
+    obj.walk().inspect_enter(callback).run_to_completion();
+}
+
+/// Implementations on std types.
+mod std_impls {
+    use crate::Walkable;
+
+    impl<T: Walkable> Walkable for Box<T> {
+        // Box the walker otherwise recursive structures will have infinite-size walkers.
+        type Walker<'a> = Box<T::Walker<'a>> where T: 'a;
+        fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
+            Box::new((**self).walk())
+        }
+    }
 }

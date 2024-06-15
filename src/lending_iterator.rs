@@ -1,4 +1,8 @@
+use higher_kinded_types::ForLifetime;
+use std::marker::PhantomData;
+
 pub use chain::Chain;
+pub use empty::Empty;
 pub use filter::Filter;
 pub use inspect::Inspect;
 pub use zip::Zip;
@@ -217,8 +221,48 @@ pub mod either {
     }
 }
 
+/// Empty iterator.
+pub fn empty<HKT: ForLifetime>() -> Empty<HKT> {
+    Empty(PhantomData)
+}
+
+/// The inner workings of `empty`.
+pub mod empty {
+    use higher_kinded_types::ForLifetime;
+    use std::marker::PhantomData;
+
+    use crate::*;
+
+    pub struct Empty<HKT>(pub(super) PhantomData<HKT>);
+
+    impl<'item, HKT: ForLifetime> LendingIteratorItem<'item> for Empty<HKT> {
+        type Item = <HKT as ForLifetime>::Of<'item>;
+    }
+
+    impl<HKT: ForLifetime> LendingIterator for Empty<HKT> {
+        fn next(&mut self) -> Option<Item<'_, Self>> {
+            None
+        }
+    }
+}
+
+/// Implementations on std types.
+mod std_impls {
+    use crate::{Item, LendingIterator, LendingIteratorItem};
+
+    impl<'item, I: LendingIteratorItem<'item>> LendingIteratorItem<'item> for Box<I> {
+        type Item = <I as LendingIteratorItem<'item>>::Item;
+    }
+
+    impl<I: LendingIterator> LendingIterator for Box<I> {
+        fn next(&mut self) -> Option<Item<'_, Self>> {
+            (**self).next()
+        }
+    }
+}
+
 #[test]
-fn test_simple_lending_iterator() {
+fn test_simple_iterator() {
     struct RepeatRef<T>(T);
     impl<'item, T> LendingIteratorItem<'item> for RepeatRef<T> {
         type Item = &'item mut T;
@@ -227,6 +271,22 @@ fn test_simple_lending_iterator() {
     impl<T> LendingIterator for RepeatRef<T> {
         fn next(&mut self) -> Option<Item<'_, Self>> {
             Some(&mut self.0)
+        }
+    }
+}
+
+#[test]
+// This one isn't possible with a normal gat-based lening iterator because of known type system
+// limitations.
+fn test_non_static_iterator() {
+    struct RepeatRef<'a, T>(&'a mut T);
+    impl<'item, 'a, T> LendingIteratorItem<'item> for RepeatRef<'a, T> {
+        type Item = &'item mut T;
+    }
+
+    impl<'a, T> LendingIterator for RepeatRef<'a, T> {
+        fn next(&mut self) -> Option<Item<'_, Self>> {
+            Some(&mut *self.0)
         }
     }
 }
