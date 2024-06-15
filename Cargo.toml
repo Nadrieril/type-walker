@@ -6,6 +6,3 @@ edition = "2021"
 [[bin]]
 name = "visitor_as_lending_iterator"
 path = "main.rs"
-
-[dependencies]
-higher-kinded-types = "0.1.1"

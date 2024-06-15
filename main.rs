@@ -1,6 +1,4 @@
 #![feature(impl_trait_in_assoc_type)]
-use higher_kinded_types::*;
-
 use lending_iterator::*;
 use visitor::*;
 
@@ -8,6 +6,10 @@ use visitor::*;
 // I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
 // because that one doesn't have `inspect` and `chain`.
 pub mod lending_iterator {
+    pub use chain::Chain;
+    pub use filter::Filter;
+    pub use inspect::Inspect;
+
     // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
     // GAT we can't write the `TypeWalker` trait alias because the `Self: 'a` bound makes the
     // `for<'a>` constraint impossible to satisfy. Idk if this is a trait solver bug or a type
@@ -257,25 +259,23 @@ pub mod visitor {
     {
     }
 
-    /// A walker that yields `(this, Enter)`, walks over the walker returned by `walk_inside`, and
-    /// finishes by yielding `(this, Exit)`.
-    /// The higher-kinded type of `F` is crucial for safety. Unfortunately this forces the user to
-    /// specify the type of `W` by hand, using the `ForLt!` macro.
-    pub fn walk_this_and_inside<'a, T, F, W>(
-        this: &'a mut T,
-        walk_inside: F,
-    ) -> walk_this_and_inside::ThisAndInsideWalker<'a, T, F, W>
-    where
-        T: Any,
-        W: for<'b> ForLifetime<Of<'b>: TypeWalker>,
-        F: for<'b> FnOnce(&'b mut T) -> <W as ForLifetime>::Of<'b>,
-    {
-        use std::marker::PhantomData;
-        walk_this_and_inside::ThisAndInsideWalker {
-            this,
-            borrow: PhantomData,
-            walk_inside: Some(walk_inside),
-            next_step: walk_this_and_inside::ThisAndInsideWalkerNextStep::Start,
+    /// Trait for the common case of types that are walked by yielding `(self, Enter)`, walking
+    /// over the contents, and finally yielding `(self, Exit)`.
+    pub trait InnerWalkable: Any {
+        type InnerWalker<'a>: TypeWalker;
+        fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a>;
+
+        /// Yields `(self, Enter)`, walks over the inner walker, and finishes by yielding `(self,
+        /// Exit)`.
+        fn walk_this_and_inside<'a>(
+            &'a mut self,
+        ) -> walk_this_and_inside::ThisAndInsideWalker<'a, Self> {
+            use std::marker::PhantomData;
+            walk_this_and_inside::ThisAndInsideWalker {
+                this: self,
+                borrow: PhantomData,
+                next_step: walk_this_and_inside::ThisAndInsideWalkerNextStep::Start,
+            }
         }
     }
 
@@ -285,39 +285,32 @@ pub mod visitor {
         use std::any::Any;
         use std::marker::PhantomData;
 
-        pub struct ThisAndInsideWalker<'a, T, F, W: ForLifetime> {
+        use super::InnerWalkable;
+
+        pub struct ThisAndInsideWalker<'a, T: InnerWalkable + ?Sized> {
             /// This is morally a `&'a mut T` but we need a pointer to keep it around while the insides
             /// are borrowed.
             /// SAFETY: don't access while a derived reference is live.
             pub(super) this: *mut T,
             pub(super) borrow: PhantomData<&'a mut T>,
-            // Put the function in an `Option` so we can move it out.
-            pub(super) walk_inside: Option<F>,
-            // The lifetime `'a` here is a lie: we drop the walker before `'a` ends, and invalidate
-            // the reference it came from afterwards. However, the HKT ensures the user can't rely
-            // on this lifetime being `'a`, so it's safe if we're careful enough.
-            pub(super) next_step: ThisAndInsideWalkerNextStep<<W as ForLifetime>::Of<'a>>,
+            pub(super) next_step: ThisAndInsideWalkerNextStep<'a, T>,
         }
 
-        pub(super) enum ThisAndInsideWalkerNextStep<Walker> {
+        pub(super) enum ThisAndInsideWalkerNextStep<'a, T: InnerWalkable + ?Sized> {
             Start,
             EnterInside,
-            WalkInside(Walker),
+            // The lifetime `'a` here is a lie: we drop the walker before `'a` ends, and invalidate
+            // the reference it came from afterwards. However, the borrow-checker ensures this `'a`
+            // lifetime canno escape, so it's safe if we're careful enough.
+            WalkInside(<T as InnerWalkable>::InnerWalker<'a>),
             Done,
         }
 
-        impl<'a, 'item, T, F, W: ForLifetime> LendingIteratorItem<'item>
-            for ThisAndInsideWalker<'a, T, F, W>
-        {
+        impl<'a, 'item, T: InnerWalkable> LendingIteratorItem<'item> for ThisAndInsideWalker<'a, T> {
             type Item = (&'item mut dyn Any, Event);
         }
 
-        impl<'a, T, F, W> LendingIterator for ThisAndInsideWalker<'a, T, F, W>
-        where
-            T: Any,
-            W: for<'b> ForLifetime<Of<'b>: TypeWalker>,
-            F: for<'b> FnOnce(&'b mut T) -> <W as ForLifetime>::Of<'b>,
-        {
+        impl<'a, T: InnerWalkable> LendingIterator for ThisAndInsideWalker<'a, T> {
             fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
                 // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
                 // to use `yield` to make this easier to write.
@@ -340,7 +333,7 @@ pub mod visitor {
                     // `'a`. The user can't know thanks to the HRTB, so this is safe if we drop the
                     // walker before we invalidate the reference it was constructed from.
                     let this = unsafe { &mut *self.this };
-                    let walker = (self.walk_inside.take().unwrap())(this);
+                    let walker = this.walk_inner();
                     self.next_step = WalkInside(walker);
                     // Continue to next case.
                 }
@@ -351,7 +344,7 @@ pub mod visitor {
                         // This drops the walker.
                         self.next_step = Done;
                         // SAFETY: The HRTB on `F` guarantees that any borrows derived from the
-                        // argument we passed to `walk_inside` must have flowed into `W`. Since we
+                        // argument we passed to `walk_inner` must have flowed into `W`. Since we
                         // just dropped the walker, there are no live references derived from
                         // `this`. Moreover `*this` is borrowed for `'a` so we can return a derived
                         // borrow with lifetime smaller than `'a`.
@@ -419,14 +412,16 @@ pub struct Point {
 }
 
 // This can be derived automatically.
+impl InnerWalkable for Point {
+    type InnerWalker<'a> = impl TypeWalker;
+    fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
+        self.x.walk().chain(self.y.walk())
+    }
+}
 impl Walkable for Point {
     type Walker<'a> = impl TypeWalker;
     fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        use chain::Chain;
-        // Safety forces us to use a higher-kinded type, which forces the user to specify the
-        // walker type in this way.
-        type WalkerHKT = ForLt!(Chain<<u8 as Walkable>::Walker<'_>, <u8 as Walkable>::Walker<'_>>);
-        walk_this_and_inside::<_, _, WalkerHKT>(self, |this| this.x.walk().chain(this.y.walk()))
+        self.walk_this_and_inside()
     }
 }
 
@@ -437,16 +432,19 @@ pub enum OneOrTwo {
 }
 
 // This can be derived automatically.
+impl InnerWalkable for OneOrTwo {
+    type InnerWalker<'a> = impl TypeWalker;
+    fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
+        match self {
+            OneOrTwo::One(one) => Either::Left(one.walk()),
+            OneOrTwo::Two(two) => Either::Right(two.walk()),
+        }
+    }
+}
 impl Walkable for OneOrTwo {
     type Walker<'a> = impl TypeWalker;
     fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        use Either;
-        type WalkerHKT =
-            ForLt!(Either<<u8 as Walkable>::Walker<'_>, <Point as Walkable>::Walker<'_>>);
-        walk_this_and_inside::<_, _, WalkerHKT>(self, |this| match this {
-            OneOrTwo::One(one) => Either::Left(one.walk()),
-            OneOrTwo::Two(two) => Either::Right(two.walk()),
-        })
+        self.walk_this_and_inside()
     }
 }
 
