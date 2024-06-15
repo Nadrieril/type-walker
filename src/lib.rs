@@ -2,6 +2,7 @@
 #![feature(array_try_map)]
 
 use lending_iterator::*;
+use visitor::TypeVisitor;
 use walker::*;
 
 /// The lending iterator trait and helpers.
@@ -9,6 +10,7 @@ use walker::*;
 // because that one doesn't have `inspect`, `chain` or `zip`, and also with nougat I hit
 // https://github.com/rust-lang/rust/issues/126519.
 pub mod lending_iterator;
+pub mod visitor;
 pub mod walker;
 
 impl Walkable for u8 {
@@ -83,6 +85,19 @@ fn test_inspect() {
 
     assert_eq!(p.x, 44);
     assert_eq!(p.y, 14);
+}
+
+#[test]
+fn test_visitor_builder() {
+    use crate::visitor::VisitorBuilder;
+    let mut state = 0;
+    let visitor = VisitorBuilder::new(&mut state)
+        .on(|s, x: &mut u8, _| *s += *x)
+        .on(|s, x: &mut u8, _| *s += *x);
+    let mut p = Point { x: 42, y: 12 };
+    p.walk().inspect_with(visitor).run_to_completion();
+
+    assert_eq!(state, 216);
 }
 
 #[test]

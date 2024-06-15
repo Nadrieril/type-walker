@@ -60,6 +60,13 @@ pub trait TypeWalker:
         })
     }
 
+    fn inspect_with<V: TypeVisitor>(
+        self,
+        mut v: V,
+    ) -> Inspect<Self, impl FnMut(&mut (&mut dyn Any, Event))> {
+        self.inspect(move |(next, event): &mut (&mut dyn Any, Event)| v.visit(*next, *event))
+    }
+
     /// Runs to completion. Convenient in combination with `inspect_t`.
     fn run_to_completion(&mut self) {
         loop {
