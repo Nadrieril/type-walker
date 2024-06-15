@@ -5,11 +5,12 @@
 //! dynamically-typed fashion. The methods provided by this module can be used to specialize this
 //! exploration to types of interest.
 use crate::lending_iterator_ext::*;
-use crate::visitor::*;
+use derive_visitor::{DriveMut, Event, VisitorMut};
 use higher_kinded_types::ForLt;
 use lending_iterator::prelude::*;
 pub use outer_walker::OuterWalker;
 use std::any::Any;
+pub use walk_driver::WalkDriver;
 pub use zip_walkers::ZipWalkers;
 
 /// A type that can be walked.
@@ -37,13 +38,16 @@ pub trait Walkable: Any + Sized {
 
     /// Walk over the subobjects of `self`.
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a>;
-}
 
-/// Defines whether an item is being entered or exited by a visitor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    Enter,
-    Exit,
+    /// Drive a visitor through this value.
+    fn drive_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        self.walk().inspect_with(visitor).run_to_completion()
+    }
+
+    /// Wraps this into a [`derive_visitor::DriveMut`] type.
+    fn into_driver_mut(self) -> WalkDriver<Self> {
+        WalkDriver(self)
+    }
 }
 
 /// An dynamically-typed iterator over the subobjects of a value.
@@ -90,7 +94,7 @@ pub trait TypeWalker:
         })
     }
 
-    fn inspect_with<V: TypeVisitor>(
+    fn inspect_with<V: VisitorMut>(
         self,
         mut v: V,
     ) -> Inspect<Self, impl FnMut(&mut (&mut dyn Any, Event))> {
@@ -210,6 +214,19 @@ mod outer_walker {
                 return Some((outer as &mut dyn Any, Exit));
             }
             None
+        }
+    }
+}
+
+mod walk_driver {
+    use super::*;
+
+    /// Wraps a [`Walkable`] type into a [`derive_visitor::DriveMut`] type.
+    pub struct WalkDriver<T>(pub(super) T);
+
+    impl<T: Walkable> DriveMut for WalkDriver<T> {
+        fn drive_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+            self.0.drive_mut(visitor)
         }
     }
 }
