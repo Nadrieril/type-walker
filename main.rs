@@ -1,4 +1,5 @@
 #![feature(impl_trait_in_assoc_type)]
+#![feature(array_try_map)]
 
 use lending_iterator::*;
 use visitor::*;
@@ -276,6 +277,7 @@ pub mod visitor {
     use crate::lending_iterator::inspect::Inspect;
     use crate::*;
     use std::any::Any;
+    use zip_walkers::ZipWalkers;
 
     /// A type that can be visited.
     pub trait Walkable {
@@ -285,7 +287,7 @@ pub mod visitor {
         fn walk<'a>(&'a mut self) -> Self::Walker<'a>;
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Event {
         Enter,
         Exit,
@@ -475,6 +477,60 @@ pub mod visitor {
         }
     }
 
+    /// Zips a number of identical walkers. Assuming they output the same types and events in the
+    /// same order, this can be used to iterate over multiple values in lockstep. The output is not
+    /// a `TypeWalker` because the types don't match, however it has appropriate convenience
+    /// methods to consume it.
+    pub fn zip_walkers<I: TypeWalker, const N: usize>(walkers: [I; N]) -> ZipWalkers<I, N> {
+        ZipWalkers { walkers }
+    }
+
+    pub fn zip_walkables<T: Walkable, const N: usize>(
+        walkables: [&mut T; N],
+    ) -> ZipWalkers<T::Walker<'_>, N> {
+        zip_walkers(walkables.map(|x| x.walk()))
+    }
+
+    /// The inner workings of `zip_walkers`.
+    pub mod zip_walkers {
+        use crate::*;
+        use std::any::Any;
+
+        pub struct ZipWalkers<I, const N: usize> {
+            pub(super) walkers: [I; N],
+        }
+
+        impl<I: TypeWalker, const N: usize> ZipWalkers<I, N> {
+            /// Returns the next value of type `T`.
+            pub fn next_t<T: 'static>(&mut self) -> Option<([&mut T; N], Event)> {
+                while let Some((next, e)) = self.next() {
+                    let ts: Option<[&mut T; N]> = next.try_map(|v| v.downcast_mut::<T>());
+                    if let Some(ts) = ts {
+                        return Some((ts, e));
+                    }
+                }
+                None
+            }
+        }
+
+        impl<'item, I: TypeWalker, const N: usize> LendingIteratorItem<'item> for ZipWalkers<I, N> {
+            type Item = ([&'item mut dyn Any; N], Event);
+        }
+
+        impl<I: TypeWalker, const N: usize> LendingIterator for ZipWalkers<I, N> {
+            fn next(&mut self) -> Option<Item<'_, Self>> {
+                let nexts = self.walkers.each_mut().try_map(|walker| walker.next())?;
+                let events: [Event; N] = nexts.each_ref().map(|(_, e)| *e);
+                let event = events[0];
+                if events.iter().any(|e| *e != event) {
+                    return None;
+                }
+                let nexts: [&mut dyn Any; N] = nexts.map(|(x, _)| x);
+                Some((nexts, event))
+            }
+        }
+    }
+
     /// Visit all subobjects of type `U` of `obj`
     pub fn visit<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&mut U, Event)) {
         obj.walk().inspect_t(callback).run_to_completion();
@@ -571,7 +627,8 @@ fn test_nested() {
 }
 
 #[test]
-fn test_zip() {
+/// Tests iterating over multiple values using the normal `LendingIterator::zip`.
+fn test_zip_iter() {
     use Event::*;
     let mut p = Point { x: 10, y: 20 };
     let mut q = Point { x: 100, y: 200 };
@@ -592,6 +649,25 @@ fn test_zip() {
     *q_x += 1;
 
     drop(iter);
+
+    assert_eq!(p.x, 11);
+    assert_eq!(q.x, 101);
+}
+
+#[test]
+/// Tests iterating over multiple values using the special `zip_walkers` API.
+fn test_zip_walkers() {
+    let mut p = Point { x: 10, y: 20 };
+    let mut q = Point { x: 100, y: 200 };
+    let mut zip = zip_walkables([&mut p, &mut q]);
+
+    let ([p_x, q_x], _) = zip.next_t::<u8>().unwrap();
+    assert_eq!(*p_x, 10);
+    assert_eq!(*q_x, 100);
+    *p_x += 1;
+    *q_x += 1;
+
+    drop(zip);
 
     assert_eq!(p.x, 11);
     assert_eq!(q.x, 101);
