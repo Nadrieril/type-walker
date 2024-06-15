@@ -6,5 +6,6 @@ edition = "2021"
 [dependencies]
 gat-lending-iterator = "0.1.5"
 higher-kinded-types = "0.1.1"
+nougat = "0.2.4"
 polonius-the-crab = "0.4.1"
 take_mut = "0.2.2"

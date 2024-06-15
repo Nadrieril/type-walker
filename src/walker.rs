@@ -21,8 +21,9 @@ pub enum Event {
 /// A type visitor.
 /// This is a trait alias for the right kind of lending iterator, with extra provided methods
 /// for convenience.
+#[nougat::apply(nougat::Gat!)]
 pub trait TypeWalker:
-    Sized + LendingIterator + for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>
+    Sized + LendingIterator + for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>
 {
     /// Returns the next value of type `T`.
     fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
@@ -80,10 +81,11 @@ pub trait TypeWalker:
 /// Blanket impl for all lending iterators of the right type.
 // This is the reason we can't use a clean GAT-based lending iterator: when we do, this
 // `for<'item>` bound forces `Self: 'static` which prevents our usecase.
+#[nougat::apply(nougat::Gat!)]
 impl<T> TypeWalker for T
 where
     T: LendingIterator,
-    T: for<'item> LendingIteratorItem<'item, Item = (&'item mut dyn Any, Event)>,
+    T: for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>,
 {
 }
 
@@ -134,11 +136,9 @@ pub mod walk_this_and_inside {
         Done,
     }
 
-    impl<'a, 'item, T: InnerWalkable> LendingIteratorItem<'item> for ThisAndInsideWalker<'a, T> {
-        type Item = (&'item mut dyn Any, Event);
-    }
-
+    #[nougat::gat]
     impl<'a, T: InnerWalkable> LendingIterator for ThisAndInsideWalker<'a, T> {
+        type Item<'item> = (&'item mut dyn Any, Event);
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             use polonius_the_crab::*;
             // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
@@ -214,11 +214,9 @@ pub mod single {
         pub(super) next_event: Option<Event>,
     }
 
-    impl<'a, 'item, T: Any> LendingIteratorItem<'item> for Single<'a, T> {
-        type Item = (&'item mut dyn Any, Event);
-    }
-
+    #[nougat::gat]
     impl<'a, T: Any> LendingIterator for Single<'a, T> {
+        type Item<'item> = (&'item mut dyn Any, Event);
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             use Event::*;
             let e = self.next_event?;
@@ -269,11 +267,9 @@ pub mod zip_walkers {
         }
     }
 
-    impl<'item, I: TypeWalker, const N: usize> LendingIteratorItem<'item> for ZipWalkers<I, N> {
-        type Item = ([&'item mut dyn Any; N], Event);
-    }
-
+    #[nougat::gat]
     impl<I: TypeWalker, const N: usize> LendingIterator for ZipWalkers<I, N> {
+        type Item<'item> = ([&'item mut dyn Any; N], Event);
         fn next(&mut self) -> Option<Item<'_, Self>> {
             let nexts = self.walkers.each_mut().try_map(|walker| walker.next())?;
             let events: [Event; N] = nexts.each_ref().map(|(_, e)| *e);
