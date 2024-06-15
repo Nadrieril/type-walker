@@ -96,12 +96,14 @@ pub mod filter {
         F: for<'a> FnMut(&Item<'a, Self>) -> bool,
     {
         fn next(&mut self) -> Option<Item<'_, Self>> {
-            while let Some(next) = self.iter.next() {
-                if (self.f)(&next) {
-                    return Some(next);
+            use polonius_the_crab::*;
+            let mut this = self;
+            polonius_loop!(|this| -> Option<Item<'polonius, Self>> {
+                let next = polonius_try!(this.iter.next());
+                if (this.f)(&next) {
+                    polonius_return!(Some(next));
                 }
-            }
-            None
+            })
         }
     }
 }

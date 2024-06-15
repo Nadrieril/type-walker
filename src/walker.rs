@@ -25,12 +25,14 @@ pub trait TypeWalker:
 {
     /// Returns the next value of type `T`.
     fn next_t<T: 'static>(&mut self) -> Option<(&mut T, Event)> {
-        while let Some((next, e)) = self.next() {
+        use polonius_the_crab::*;
+        let mut this = self;
+        polonius_loop!(|this| -> Option<(&'polonius mut T, Event)> {
+            let (next, e) = polonius_try!(this.next());
             if let Some(next) = next.downcast_mut::<T>() {
-                return Some((next, e));
+                polonius_return!(Some((next, e)));
             }
-        }
-        None
+        })
     }
 
     /// Provided method that calls `f` on each visited item of type `T`. Returns a new visitor
@@ -79,7 +81,7 @@ pub trait InnerWalkable: Any {
     ) -> walk_this_and_inside::ThisAndInsideWalker<'a, Self> {
         use std::marker::PhantomData;
         walk_this_and_inside::ThisAndInsideWalker {
-            this: self,
+            outer: self,
             borrow: PhantomData,
             next_step: walk_this_and_inside::ThisAndInsideWalkerNextStep::Start,
         }
@@ -98,7 +100,7 @@ pub mod walk_this_and_inside {
         /// This is morally a `&'a mut T` but we need a pointer to keep it around while the insides
         /// are borrowed.
         /// SAFETY: don't access while a derived reference is live.
-        pub(super) this: *mut T,
+        pub(super) outer: *mut T,
         pub(super) borrow: PhantomData<&'a mut T>,
         pub(super) next_step: ThisAndInsideWalkerNextStep<'a, T>,
     }
@@ -108,7 +110,7 @@ pub mod walk_this_and_inside {
         EnterInside,
         // The lifetime `'a` here is a lie: we drop the walker before `'a` ends, and invalidate
         // the reference it came from afterwards. However, the borrow-checker ensures this `'a`
-        // lifetime canno escape, so it's safe if we're careful enough.
+        // lifetime cannot escape, so it's safe if we're careful enough.
         WalkInside(<T as InnerWalkable>::InnerWalker<'a>),
         Done,
     }
@@ -119,19 +121,23 @@ pub mod walk_this_and_inside {
 
     impl<'a, T: InnerWalkable> LendingIterator for ThisAndInsideWalker<'a, T> {
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
+            use polonius_the_crab::*;
             // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
             // to use `yield` to make this easier to write.
             use Event::*;
             use ThisAndInsideWalkerNextStep::*;
-            if let Start = self.next_step {
-                self.next_step = EnterInside;
-                // SAFETY: No references derived from `this` are live because we haven't
-                // created one yet. Moreover `*this` is borrowed for `'a` so we can return a
-                // derived borrow with lifetime smaller than `'a`.
-                let this = unsafe { &mut *self.this };
-                return Some((this as &mut dyn Any, Enter));
-            }
-            if let EnterInside = self.next_step {
+            let mut this = self;
+            polonius!(|this| -> Option<(&'polonius mut dyn Any, Event)> {
+                if let Start = this.next_step {
+                    this.next_step = EnterInside;
+                    // SAFETY: No references derived from `this` are live because we haven't
+                    // created one yet. Moreover `*this` is borrowed for `'a` so we can return a
+                    // derived borrow with lifetime smaller than `'a`.
+                    let outer = unsafe { &mut *this.outer };
+                    polonius_return!(Some((outer as &mut dyn Any, Enter)));
+                }
+            });
+            if let EnterInside = this.next_step {
                 // SAFETY: No references derived from `this` are live because the only one we
                 // created was returned and the borrow-checker guarantees `next()` can only be
                 // called again after it is dropped.
@@ -139,25 +145,28 @@ pub mod walk_this_and_inside {
                 // `'a` even though we will invalidate the derived reference before the end of
                 // `'a`. The user can't know thanks to the HRTB, so this is safe if we drop the
                 // walker before we invalidate the reference it was constructed from.
-                let this = unsafe { &mut *self.this };
-                let walker = this.walk_inner();
-                self.next_step = WalkInside(walker);
+                let outer = unsafe { &mut *this.outer };
+                let walker = outer.walk_inner();
+                this.next_step = WalkInside(walker);
                 // Continue to next case.
             }
-            if let WalkInside(ref mut walker) = self.next_step {
-                if let Some(next) = walker.next() {
-                    return Some(next);
-                } else {
-                    // This drops the walker.
-                    self.next_step = Done;
-                    // SAFETY: The HRTB on `F` guarantees that any borrows derived from the
-                    // argument we passed to `walk_inner` must have flowed into `W`. Since we
-                    // just dropped the walker, there are no live references derived from
-                    // `this`. Moreover `*this` is borrowed for `'a` so we can return a derived
-                    // borrow with lifetime smaller than `'a`.
-                    let this = unsafe { &mut *self.this };
-                    return Some((this as &mut dyn Any, Exit));
+            polonius!(|this| -> Option<(&'polonius mut dyn Any, Event)> {
+                if let WalkInside(ref mut walker) = this.next_step {
+                    if let Some(next) = walker.next() {
+                        polonius_return!(Some(next));
+                    }
                 }
+            });
+            if !matches!(this.next_step, Done) {
+                // This drops the walker.
+                this.next_step = Done;
+                // SAFETY: The HRTB on `F` guarantees that any borrows derived from the
+                // argument we passed to `walk_inner` must have flowed into `W`. Since we
+                // just dropped the walker, there are no live references derived from
+                // `this`. Moreover `*this` is borrowed for `'a` so we can return a derived
+                // borrow with lifetime smaller than `'a`.
+                let outer = unsafe { &mut *this.outer };
+                return Some((outer as &mut dyn Any, Exit));
             }
             None
         }
@@ -225,13 +234,15 @@ pub mod zip_walkers {
     impl<I: TypeWalker, const N: usize> ZipWalkers<I, N> {
         /// Returns the next value of type `T`.
         pub fn next_t<T: 'static>(&mut self) -> Option<([&mut T; N], Event)> {
-            while let Some((next, e)) = self.next() {
+            use polonius_the_crab::*;
+            let mut this = self;
+            polonius_loop!(|this| -> Option<([&'polonius mut T; N], Event)> {
+                let (next, e) = polonius_try!(this.next());
                 let ts: Option<[&mut T; N]> = next.try_map(|v| v.downcast_mut::<T>());
                 if let Some(ts) = ts {
-                    return Some((ts, e));
+                    polonius_return!(Some((ts, e)));
                 }
-            }
-            None
+            })
         }
     }
 
