@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 gat-lending-iterator = "0.1.5"
+polonius-the-crab = "0.4.1"

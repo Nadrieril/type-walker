@@ -130,20 +130,24 @@ pub mod chain {
         J: for<'item> LendingIteratorItem<'item, Item = Item<'item, I>>,
     {
         fn next(&mut self) -> Option<Item<'_, I>> {
-            if let Some(first) = &mut self.first {
-                if let Some(next) = first.next() {
-                    return Some(next);
-                } else {
-                    self.first = None;
+            use polonius_the_crab::*;
+            let mut this = self;
+            polonius!(|this| -> Option<Item<'polonius, I>> {
+                if let Some(first) = &mut this.first {
+                    if let Some(next) = first.next() {
+                        polonius_return!(Some(next));
+                    }
                 }
-            }
-            if let Some(second) = &mut self.second {
-                if let Some(next) = second.next() {
-                    return Some(next);
-                } else {
-                    self.second = None;
+            });
+            this.first = None;
+            polonius!(|this| -> Option<Item<'polonius, I>> {
+                if let Some(second) = &mut this.second {
+                    if let Some(next) = second.next() {
+                        polonius_return!(Some(next));
+                    }
                 }
-            }
+            });
+            this.second = None;
             None
         }
     }
