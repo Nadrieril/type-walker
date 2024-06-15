@@ -64,9 +64,12 @@ fn test_visitor_builder() {
         .on_mut(|s, x: &mut u8, _| *s += *x)
         .on_mut(|s, x: &mut u8, _| *s += *x);
     let mut p = Point { x: 42, y: 12 };
-    p.walk().inspect_with(visitor).run_to_completion();
+    p.walk()
+        .only_enter()
+        .inspect_with(visitor)
+        .run_to_completion();
 
-    assert_eq!(state, 216);
+    assert_eq!(state, 108);
 }
 
 #[test]
@@ -118,7 +121,9 @@ fn test_zip_walkers() {
     let mut p = Point { x: 10, y: 20 };
     let mut q = Point { x: 100, y: 200 };
     let mut count_steps = 0;
-    let mut zip = zip_walkables([&mut p, &mut q]).inspect_enter::<u8, _>(|_| count_steps += 1);
+    let mut zip = zip_walkables([&mut p, &mut q])
+        .only_enter()
+        .inspect_t::<u8, _>(|_, _| count_steps += 1);
 
     let ([p_x, q_x], _) = zip.next_t::<u8>().unwrap();
     assert_eq!(*p_x, 10);
@@ -126,8 +131,6 @@ fn test_zip_walkers() {
     *p_x += 1;
     *q_x += 1;
 
-    let _ = zip.next_t::<u8>().unwrap();
-    let _ = zip.next_t::<u8>().unwrap();
     let _ = zip.next_t::<u8>().unwrap();
     assert!(zip.next_t::<u8>().is_none());
 

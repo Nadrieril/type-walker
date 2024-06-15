@@ -7,7 +7,7 @@
 use crate::lending_iterator_ext::*;
 use derive_visitor::{DriveMut, Event, VisitorMut};
 use higher_kinded_types::ForLt;
-use lending_iterator::prelude::*;
+use lending_iterator::{lending_iterator::adapters::Filter, prelude::*};
 pub use outer_walker::OuterWalker;
 use std::any::Any;
 pub use walk_driver::WalkDriver;
@@ -67,6 +67,11 @@ pub trait TypeWalker:
                 polonius_return!(Some((next, e)));
             }
         })
+    }
+
+    /// Keeps only the [`Event::Enter`] events.
+    fn only_enter(self) -> Filter<Self, impl FnMut(&(&mut dyn Any, Event)) -> bool> {
+        self.filter(move |(_, event)| matches!(event, Event::Enter))
     }
 
     /// Calls `f` on each visited item of type `T`. Returns a new visitor that visits on the same

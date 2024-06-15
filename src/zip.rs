@@ -1,5 +1,6 @@
 //! Utilities for visiting multiple values in lockstep.
 use crate::{lending_iterator_ext::Inspect, prelude::*, walker::OuterWalker};
+use lending_iterator::lending_iterator::adapters::Filter;
 
 pub use zip_walkers::ZipWalkers;
 
@@ -39,6 +40,11 @@ pub trait ZipWalker<const N: usize>:
                 f(next_t, *event)
             }
         })
+    }
+
+    /// Keeps only the [`Event::Enter`] events.
+    fn only_enter(self) -> Filter<Self, impl FnMut(&([&mut dyn Any; N], Event)) -> bool> {
+        self.filter(move |(_, event)| matches!(event, Event::Enter))
     }
 
     fn inspect_enter<T: 'static, F: FnMut([&mut T; N])>(
