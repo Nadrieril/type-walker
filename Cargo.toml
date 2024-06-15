@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 gat-lending-iterator = "0.1.5"
+lending-iterator = "0.1.7"
+nougat = "0.2.4"
