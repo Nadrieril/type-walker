@@ -92,7 +92,7 @@ impl Display for Expr {
     }
 }
 
-impl InnerWalkable for Expr {
+impl Walkable for Expr {
     type InnerWalker<'a> = impl TypeWalker;
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
         match self {
@@ -100,12 +100,6 @@ impl InnerWalkable for Expr {
             Self::Mul(a, b) => Either::Left(Either::Right(a.walk().chain(b.walk()))),
             Self::Num(_) => Either::Right(empty_walker()),
         }
-    }
-}
-impl Walkable for Expr {
-    type Walker<'a> = impl TypeWalker;
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        self.walk_this_and_inside()
     }
 }
 

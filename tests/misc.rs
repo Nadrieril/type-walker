@@ -9,16 +9,10 @@ pub struct Point {
 }
 
 // This can be derived automatically.
-impl InnerWalkable for Point {
+impl Walkable for Point {
     type InnerWalker<'a> = impl TypeWalker;
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
         single(&mut self.x).chain(single(&mut self.y))
-    }
-}
-impl Walkable for Point {
-    type Walker<'a> = impl TypeWalker;
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        self.walk_this_and_inside()
     }
 }
 
@@ -29,19 +23,13 @@ pub enum OneOrTwo {
 }
 
 // This can be derived automatically.
-impl InnerWalkable for OneOrTwo {
+impl Walkable for OneOrTwo {
     type InnerWalker<'a> = impl TypeWalker;
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
         match self {
             OneOrTwo::One(one) => Either::Left(single(one)),
             OneOrTwo::Two(two) => Either::Right(two.walk()),
         }
-    }
-}
-impl Walkable for OneOrTwo {
-    type Walker<'a> = impl TypeWalker;
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        self.walk_this_and_inside()
     }
 }
 

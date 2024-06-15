@@ -16,8 +16,7 @@ pub mod prelude {
     pub use crate::visitor::{TypeVisitor, VisitorBuilder};
     #[doc(no_inline)]
     pub use crate::walker::{
-        empty_walker, single, zip_walkables, zip_walkers, Event, InnerWalkable, TypeWalker,
-        Walkable,
+        empty_walker, single, zip_walkables, zip_walkers, Event, TypeWalker, Walkable,
     };
 
     #[doc(no_inline)]

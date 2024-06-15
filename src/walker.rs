@@ -8,6 +8,7 @@ use crate::lending_iterator_ext::*;
 use crate::visitor::*;
 use higher_kinded_types::ForLt;
 use lending_iterator::prelude::*;
+pub use outer_walker::OuterWalker;
 use std::any::Any;
 pub use zip_walkers::ZipWalkers;
 
@@ -16,19 +17,26 @@ pub use zip_walkers::ZipWalkers;
 /// This is similar to [`IntoIterator`], but here `Walker` may borrow from `self`, and is a
 /// [`TypeWalker`] instead of an arbitrary iterator.
 ///
-/// When walking over a value, the intent is to yield twice for each subobject: the first time we
-/// encounter the object we yield `(&mut object, Event::Enter)`; after that we walk subobjects of
-/// `object`; once we're done we yield `(&mut object, Event::Exit)`.
+/// When walking over a value, we yield twice for each subobject: the first time we encounter the
+/// object we yield `(&mut object, Event::Enter)`; after that we walk subobjects of `object`; once
+/// we're done we yield `(&mut object, Event::Exit)`.
 ///
-/// To implement this trait, implement [`InnerWalkable`] and call
-/// [`InnerWalkable::walk_this_and_inside`] to handle `(self, Enter)`/`(self, Exit)` for you.
-pub trait Walkable {
-    type Walker<'a>: TypeWalker
+/// To implement this trait, implement [`Walkable::walk_inner()`].
+pub trait Walkable: Any + Sized {
+    /// Walk over this value and its subobjects.
+    ///
+    /// This method is provided and should not be overriden. Implement [`Walkable::walk_inner()`] instead.
+    fn walk<'a>(&'a mut self) -> OuterWalker<'a, Self> {
+        OuterWalker::new(self)
+    }
+
+    /// Walker over the subobjects.
+    type InnerWalker<'a>: TypeWalker
     where
         Self: 'a;
 
-    /// Walk over this value and its subobjects.
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a>;
+    /// Walk over the subobjects of `self`.
+    fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a>;
 }
 
 /// Defines whether an item is being entered or exited by a visitor.
@@ -111,65 +119,54 @@ where
 {
 }
 
-/// A convenience trait for types that are walked as described in the doc of [`Walkable`].
-///
-/// Implement `walk_inner` that walks over the contents of `self`, and use `walk_this_and_inside`
-/// to get a walker that also yields `self` on enter and exit.
-pub trait InnerWalkable: Walkable + Any {
-    type InnerWalker<'a>: TypeWalker;
-    /// Walk over the contents of `self`.
-    fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a>;
-
-    /// Yields `(self, Enter)`, walks over the inner walker, and finishes by yielding `(self,
-    /// Exit)`.
-    fn walk_this_and_inside<'a>(
-        &'a mut self,
-    ) -> walk_this_and_inside::ThisAndInsideWalker<'a, Self> {
-        use std::marker::PhantomData;
-        walk_this_and_inside::ThisAndInsideWalker {
-            outer: self,
-            borrow: PhantomData,
-            next_step: walk_this_and_inside::ThisAndInsideWalkerNextStep::Start,
-        }
-    }
-}
-
-/// The inner workings of `walk_this_and_inside`.
-mod walk_this_and_inside {
+/// The inner workings of walking `self`.
+mod outer_walker {
     use super::*;
     use std::any::Any;
     use std::marker::PhantomData;
 
-    use super::InnerWalkable;
+    use super::Walkable;
 
-    pub struct ThisAndInsideWalker<'a, T: InnerWalkable + ?Sized> {
+    /// Handles the yielding of `(self, Enter)` and `(self, Exit)` before/after `T`'s inner walker.
+    pub struct OuterWalker<'a, T: Walkable + ?Sized> {
         /// This is morally a `&'a mut T` but we need a pointer to keep it around while the insides
         /// are borrowed.
         /// SAFETY: don't access while a derived reference is live.
-        pub(super) outer: *mut T,
-        pub(super) borrow: PhantomData<&'a mut T>,
-        pub(super) next_step: ThisAndInsideWalkerNextStep<'a, T>,
+        outer: *mut T,
+        borrow: PhantomData<&'a mut T>,
+        next_step: OuterWalkerNextStep<'a, T>,
     }
 
-    pub(super) enum ThisAndInsideWalkerNextStep<'a, T: InnerWalkable + ?Sized> {
+    impl<'a, T: Walkable + ?Sized> OuterWalker<'a, T> {
+        pub fn new(outer: &'a mut T) -> OuterWalker<'a, T> {
+            use std::marker::PhantomData;
+            OuterWalker {
+                outer,
+                borrow: PhantomData,
+                next_step: OuterWalkerNextStep::Start,
+            }
+        }
+    }
+
+    pub(super) enum OuterWalkerNextStep<'a, T: Walkable + ?Sized> {
         Start,
         EnterInside,
         // The lifetime `'a` here is a lie: we drop the walker before `'a` ends, and invalidate
         // the reference it came from afterwards. However, the borrow-checker ensures this `'a`
         // lifetime cannot escape, so it's safe if we're careful enough.
-        WalkInside(<T as InnerWalkable>::InnerWalker<'a>),
+        WalkInside(<T as Walkable>::InnerWalker<'a>),
         Done,
     }
 
     #[nougat::gat]
-    impl<'a, T: InnerWalkable> LendingIterator for ThisAndInsideWalker<'a, T> {
+    impl<'a, T: Walkable> LendingIterator for OuterWalker<'a, T> {
         type Item<'item> = (&'item mut dyn Any, Event);
         fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             use polonius_the_crab::*;
             // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
             // to use `yield` to make this easier to write.
             use Event::*;
-            use ThisAndInsideWalkerNextStep::*;
+            use OuterWalkerNextStep::*;
             let mut this = self;
             polonius!(|this| -> Option<(&'polonius mut dyn Any, Event)> {
                 if let Start = this.next_step {
@@ -266,10 +263,10 @@ pub fn zip_walkers<I: TypeWalker, const N: usize>(walkers: [I; N]) -> ZipWalkers
 
 /// Zips a number of identical walkables.
 ///
-/// See [`zip_walkers`] for details.
+/// See [`zip_walkers()`] for details.
 pub fn zip_walkables<T: Walkable, const N: usize>(
     walkables: [&mut T; N],
-) -> ZipWalkers<T::Walker<'_>, N> {
+) -> ZipWalkers<OuterWalker<'_, T>, N> {
     zip_walkers(walkables.map(|x| x.walk()))
 }
 
@@ -326,12 +323,12 @@ pub fn visit_enter<T: Walkable, U: 'static>(obj: &mut T, callback: impl FnMut(&m
 
 /// Implementations on std types.
 mod std_impls {
-    use super::Walkable;
+    use super::{OuterWalker, Walkable};
 
     impl<T: Walkable> Walkable for Box<T> {
         // Box the walker otherwise recursive structures will have infinite-size walkers.
-        type Walker<'a> = Box<T::Walker<'a>> where T: 'a;
-        fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
+        type InnerWalker<'a> = Box<OuterWalker<'a, T>> where T: 'a;
+        fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
             Box::new((**self).walk())
         }
     }

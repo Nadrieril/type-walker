@@ -119,22 +119,16 @@ It's not too hard using the utilities provided.
 
 It usually looks like:
 ```rust
-impl InnerWalkable for SomeStruct {
+impl Walkable for SomeStruct {
     type InnerWalker<'a> = impl TypeWalker;
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
         self.field1.walk().chain(self.field2.walk())
     }
 }
-impl Walkable for SomeStruct {
-    type Walker<'a> = impl TypeWalker;
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        self.walk_this_and_inside()
-    }
-}
 ```
 
-`InnerWalkable` takes care of yielding `(self, Enter)` and `(self, Exit)` at the start and end.
-Your implementation of `walk_inner` must then walk over the inner fields of your type.
+`Walkable::walk()` takes care of yielding `(self, Enter)` and `(self, Exit)` at the start and end.
+Your implementation of `walk_inner` must only walk over the inner fields of your type.
 
 For structs, use `LendingIterator::chain` to chain the iterators over each field, like above.
 `empty_walker()` can be used for structs without fields.
@@ -149,7 +143,7 @@ pub enum OneOrTwo {
     Three,
 }
 
-impl InnerWalkable for OneOrTwo {
+impl Walkable for OneOrTwo {
     type InnerWalker<'a> = impl TypeWalker;
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
         match self {
@@ -157,12 +151,6 @@ impl InnerWalkable for OneOrTwo {
             OneOrTwo::Two(two) => Either::Left(Either::Right(two.walk())),
             OneOrTwo::Three => Either::Right(empty_walker()),
         }
-    }
-}
-impl Walkable for OneOrTwo {
-    type Walker<'a> = impl TypeWalker;
-    fn walk<'a>(&'a mut self) -> Self::Walker<'a> {
-        self.walk_this_and_inside()
     }
 }
 ```
