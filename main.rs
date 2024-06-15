@@ -5,10 +5,13 @@ use lending_iterator::*;
 use visitor_crate::*;
 
 /// The lending iterator trait and helpers.
+// I define my own instead of using https://docs.rs/lending-iterator/latest/lending_iterator
+// because that one doesn't have `inspect` and `chain`.
 pub mod lending_iterator {
-    //! GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
-    //! GAT we can't write the `TypeWalker` trait alias because the `for<'a>` constraint becomes
-    //! impossible to satisfy. Idk if this is a trait solver bug or a type system limitation.
+    // GAT hack taken from https://docs.rs/lending-iterator/latest/lending_iterator. With a real
+    // GAT we can't write the `TypeWalker` trait alias because the `Self: 'a` bound makes the
+    // `for<'a>` constraint becomes impossible to satisfy. Idk if this is a trait solver bug or a
+    // type system limitation.
     pub trait LendingIterator: Sized
     where
         Self: for<'item> LendingIteratorItem<'item>,
