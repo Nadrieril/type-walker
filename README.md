@@ -10,35 +10,18 @@ borrow-checker limitations.
 
 ## Overview
 
-First, this crate defines a lending iterator trait, on which everything is based. It looks morally
-like (with extra hacks):
+This crate defines a `TypeWalker` trait, which is an iterator over `(&mut dyn Any, Event)`, with:
 
 ```rust
-pub trait LendingIterator {
-    type Item<'a>
-       where Self: 'a;
-
-    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>>;
-}
-```
-
-This is like a normal `Iterator`, except that the returned item can borrow from `self`. This means
-you must drop the previous value you got from the iterator before calling `next()` again. This
-prevents APIs like `collect()`, but enables returning overlapping `&mut` references, which is what
-we do in this crate.
-
-Then, we have a trait alias for the kinds of iterators we care about:
-```rust
+pub trait TypeWalker = for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>
 enum Event {
     Enter,
     Exit,
 }
-pub trait TypeWalker = for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>
 ```
 
-These are iterators that yield `(&mut dyn Any, Event)` values. When walking over a value, we will
-yield references to the various sub-values in a tree-like fashion:
-
+A type walker is used to walk over a value and yield references to the various sub-values in
+a tree-like fashion:
 ```rust
 struct SomeStruct {
     field1: Type1,
@@ -55,7 +38,12 @@ struct SomeStruct {
 // (&mut s, Event::Exit)
 ```
 
-Finally, a type that can be walked must implement `Walkable`:
+Note that we can't use normal iterators for that, as we yield mutable references that overlap. To
+make this work, we use lending iterators, provided by the
+[lending_iterator](https://docs.rs/lending-iterator/latest/lending_iterator/index.html) crate.
+
+The other important trait in this crate is `Walkable`, which denotes a type that can be walked. This
+is the equivalent of `IntoIterator` for `TypeWalker`s:
 
 ```rust
 pub trait Walkable {
@@ -76,6 +64,7 @@ pub struct Point {
     x: u8,
     y: u8,
 }
+
 let mut p = Point { x: 42, y: 12 };
 p.walk()
     // This is called each time we visit a `Point`.
@@ -117,7 +106,7 @@ val.walk().inspect_with(visitor).run_to_completion();
 This crate does not have derive macros yet. In the mean time, you must implement the traits by hand.
 It's not too hard using the utilities provided.
 
-It usually looks like:
+It looks like:
 ```rust
 impl Walkable for SomeStruct {
     type InnerWalker<'a> = impl TypeWalker;
@@ -147,7 +136,7 @@ impl Walkable for OneOrTwo {
     type InnerWalker<'a> = impl TypeWalker;
     fn walk_inner<'a>(&'a mut self) -> Self::InnerWalker<'a> {
         match self {
-            OneOrTwo::One(one) => Either::Left(Either::Left(one.walk())),
+            OneOrTwo::One(one) => Either::Left(Either::Left(single(one))),
             OneOrTwo::Two(two) => Either::Left(Either::Right(two.walk())),
             OneOrTwo::Three => Either::Right(empty_walker()),
         }
