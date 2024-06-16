@@ -129,104 +129,47 @@ where
 
 /// The inner workings of walking `self`.
 mod outer_walker {
-    // Utility struct that encapsulates the `unsafe`.
-    mod ref_and_derived {
-        use higher_kinded_types::ForLifetime;
-        use std::marker::PhantomData;
-
-        /// Keeps a `&'a mut T` alongside a value that captures a derived borrow to it. Provides a safe
-        /// API for that.
-        pub struct RefAndDerived<'a, T: ?Sized, Derived: ForLifetime> {
-            /// This is morally a `&'a mut T` but we need a pointer to keep it around while the insides
-            /// are borrowed.
-            /// SAFETY: don't access while a derived reference is live.
-            outer: *mut T,
-            borrow: PhantomData<&'a mut T>,
-            // The lifetime `'a` here is a lie: we drop the derived value before `'a` ends, and
-            // invalidate the reference it came from afterwards. However, the borrow-checker ensures
-            // this `'a` lifetime cannot escape, so (I hope) it's safe if we're careful enough.
-            derived: <Derived as ForLifetime>::Of<'a>,
-        }
-
-        impl<'a, T: ?Sized, Derived: ForLifetime> RefAndDerived<'a, T, Derived> {
-            // The HRTB in `derive` is the key to the safety of the API.
-            pub fn new(
-                outer: &'a mut T,
-                derive: impl for<'b> FnOnce(&'b mut T) -> <Derived as ForLifetime>::Of<'b>,
-            ) -> Self {
-                // Convert to a raw pointer.
-                let outer: *mut T = outer;
-                // SAFETY: By the signature of this function, `outer` is valid for `'a`. Moreover
-                // we won't access `outer` until `derived` is dropped.
-                let inner: &'a mut T = unsafe { &mut *outer };
-                let derived = derive(inner);
-                RefAndDerived {
-                    outer,
-                    borrow: PhantomData,
-                    derived,
-                }
-            }
-
-            pub fn derived<'b>(&'b mut self) -> &'b mut <Derived as ForLifetime>::Of<'b>
-            where
-                'a: 'b,
-            {
-                let derived = &mut self.derived;
-                // SAFETY: Since `derive` could have been called with any `'b` shorter than `'a`,
-                // it is ok to pretend it was. The HRTB of `derive` ensures this lie cannot be
-                // observed.
-                // This is probably a bad idea with contravariant lifetimes anyway.
-                unsafe { std::mem::transmute(derived) }
-            }
-
-            pub fn take(self) -> &'a mut T {
-                let RefAndDerived {
-                    outer,
-                    borrow: _,
-                    derived,
-                } = self;
-                drop(derived);
-                // SAFETY: All derived references have been dropped. Moreover, `outer` is valid for
-                // `&'a`, and the signature of this function ensure we convert to a borrow with
-                // lifetime `'a`.
-                unsafe { &mut *outer }
-            }
-        }
-    }
-
     use super::*;
     use std::any::Any;
+    use std::marker::PhantomData;
 
     use super::Walkable;
-    use ref_and_derived::RefAndDerived;
 
     /// Handles the yielding of `(self, Enter)` and `(self, Exit)` before/after `T`'s inner walker.
     pub struct OuterWalker<'a, T: Walkable + ?Sized> {
+        /// This is morally a `&'a mut T` but we need a pointer to keep it around while the insides
+        /// are borrowed.
+        /// SAFETY: don't access while a derived reference is live.
+        outer: *mut T,
+        borrow: PhantomData<&'a mut T>,
         next_step: OuterWalkerNextStep<'a, T>,
     }
 
     impl<'a, T: Walkable + ?Sized> OuterWalker<'a, T> {
         pub fn new(outer: &'a mut T) -> OuterWalker<'a, T> {
+            use std::marker::PhantomData;
             OuterWalker {
-                next_step: OuterWalkerNextStep::Start(outer),
+                outer,
+                borrow: PhantomData,
+                next_step: OuterWalkerNextStep::Start,
             }
         }
     }
 
     pub(super) enum OuterWalkerNextStep<'a, T: Walkable + ?Sized> {
-        Start(&'a mut T),
-        EnterInside(RefAndDerived<'a, T, ForLt!(&'_ mut T)>),
+        Start,
+        EnterInside,
         // The lifetime `'a` here is a lie: we drop the walker before `'a` ends, and invalidate
         // the reference it came from afterwards. However, the borrow-checker ensures this `'a`
         // lifetime cannot escape, so it's safe if we're careful enough.
-        WalkInside(RefAndDerived<'a, T, ForLt!(<T as Walkable>::InnerWalker<'_>)>),
+        WalkInside(<T as Walkable>::InnerWalker<'a>),
         Done,
     }
 
     #[nougat::gat]
     impl<'a, T: Walkable> LendingIterator for OuterWalker<'a, T> {
         type Item<'item> = (&'item mut dyn Any, Event);
-        fn next<'b>(&'b mut self) -> Option<(&'b mut dyn Any, Event)> {
+        fn next(&mut self) -> Option<(&mut dyn Any, Event)> {
             use polonius_the_crab::*;
             // This is pretty much a hand-rolled `Generator`. With nightly rustc we might be able
             // to use `yield` to make this easier to write.
@@ -234,35 +177,44 @@ mod outer_walker {
             use OuterWalkerNextStep::*;
             let mut this = self;
             polonius!(|this| -> Option<(&'polonius mut dyn Any, Event)> {
-                if let Start(_) = &this.next_step {
-                    let Start(outer) = std::mem::replace(&mut this.next_step, Done) else {
-                        panic!()
-                    };
-                    this.next_step = EnterInside(RefAndDerived::new(outer, |outer| outer));
-                    let EnterInside(ref mut outer) = this.next_step else {
-                        panic!()
-                    };
-                    let outer: &mut T = *outer.derived();
+                if let Start = this.next_step {
+                    this.next_step = EnterInside;
+                    // SAFETY: No references derived from `this` are live because we haven't
+                    // created one yet. Moreover `*this` is borrowed for `'a` so we can return a
+                    // derived borrow with lifetime smaller than `'a`.
+                    let outer = unsafe { &mut *this.outer };
                     polonius_return!(Some((outer as &mut dyn Any, Enter)));
                 }
             });
-            if let EnterInside(_) = &this.next_step {
-                let EnterInside(outer) = std::mem::replace(&mut this.next_step, Done) else {
-                    panic!()
-                };
-                let outer = outer.take();
-                this.next_step = WalkInside(RefAndDerived::new(outer, |outer| outer.walk_inner()));
+            if let EnterInside = this.next_step {
+                // SAFETY: No references derived from `this` are live because the only one we
+                // created was returned and the borrow-checker guarantees `next()` can only be
+                // called again after it is dropped.
+                // We are lying about lifetimes here: the walked is constructed with lifetime
+                // `'a` even though we will invalidate the derived reference before the end of
+                // `'a`. The user can't know thanks to the HRTB, so this is safe if we drop the
+                // walker before we invalidate the reference it was constructed from.
+                let outer = unsafe { &mut *this.outer };
+                let walker = outer.walk_inner();
+                this.next_step = WalkInside(walker);
                 // Continue to next case.
             }
             polonius!(|this| -> Option<(&'polonius mut dyn Any, Event)> {
-                if let WalkInside(ref mut ref_and_walker) = this.next_step {
-                    if let Some(next) = ref_and_walker.derived().next() {
+                if let WalkInside(ref mut walker) = this.next_step {
+                    if let Some(next) = walker.next() {
                         polonius_return!(Some(next));
                     }
                 }
             });
-            if let WalkInside(ref_and_walker) = std::mem::replace(&mut this.next_step, Done) {
-                let outer = ref_and_walker.take();
+            if !matches!(this.next_step, Done) {
+                // This drops the walker.
+                this.next_step = Done;
+                // SAFETY: The HRTB on `F` guarantees that any borrows derived from the
+                // argument we passed to `walk_inner` must have flowed into `W`. Since we
+                // just dropped the walker, there are no live references derived from
+                // `this`. Moreover `*this` is borrowed for `'a` so we can return a derived
+                // borrow with lifetime smaller than `'a`.
+                let outer = unsafe { &mut *this.outer };
                 return Some((outer as &mut dyn Any, Exit));
             }
             None
