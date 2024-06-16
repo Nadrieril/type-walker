@@ -13,7 +13,7 @@ borrow-checker limitations.
 This crate defines a `TypeWalker` trait, which is an iterator over `(&mut dyn Any, Event)`, with:
 
 ```rust
-pub trait TypeWalker = for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>
+pub trait TypeWalker = for<'item> LendingIterator<Item<'item> = (&'item mut dyn Any, Event)>;
 enum Event {
     Enter,
     Exit,
