@@ -1,9 +1,8 @@
 # type-walker
 
 This is a toy crate that provides an API to visit the fields and sub-fields of a type with an
-`Iterator`-like API. It mimics the kind of traversal done by
-[derive-visitor](https://crates.io/crates/derive-visitor), but the iterator-like interface is a lot
-more flexible to use.
+`Iterator`-like API. It mimics the kind of traversal done by [derive-visitor], but the iterator-like
+interface is a lot more flexible to use.
 
 This comes at the cost of type-level hacks, a bit of `unsafe`, and having to work around
 borrow-checker limitations.
@@ -99,7 +98,13 @@ let visitor = VisitorBuilder::new_mut(&mut state)
     .on_mut(|state, x: &mut Type2, e| ...);
 // Walk `val` with the visitor.
 val.walk().inspect_with(visitor).run_to_completion();
+// This is equivalent:
+val.drive_mut(&mut visitor);
 ```
+
+We fully support [derive-visitor]'s `DriveMut`/`VisitorMut` API. `Walkable::drive_mut` take
+a `VisitorMut` visitor, and a `Walkable` can be turned into a `DriveMut` type with
+`Walkable::into_driver_mut`.
 
 ## Implementing `Walkable`
 
@@ -143,3 +148,5 @@ impl Walkable for OneOrTwo {
     }
 }
 ```
+
+[derive-visitor]: https://crates.io/crates/derive-visitor
